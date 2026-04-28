@@ -1,8 +1,8 @@
+use serde::{Deserialize, Serialize};
 use std::{
     io,
     io::{BufReader, BufWriter, Read, Write},
 };
-use serde::{Serialize, Deserialize};
 
 const LN_2: f64 = 0.6931471805599453094_f64;
 

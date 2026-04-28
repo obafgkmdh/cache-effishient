@@ -1,8 +1,13 @@
 use clap::{Parser, Subcommand};
-use std::{io::{Read, Write}, fs::File};
-use lib::{naive_dbg::DeBruijnGraph, fasta::{FastaReader, ParseError, Record}};
+use lib::{
+    fasta::{FastaReader, ParseError, Record},
+    naive_dbg::DeBruijnGraph,
+};
 use postcard::{from_bytes, to_stdvec};
-
+use std::{
+    fs::File,
+    io::{Read, Write},
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "naive", version)]
@@ -54,7 +59,11 @@ fn main() {
             let bytes: Vec<u8> = to_stdvec(&dbg).unwrap();
             out_file.write_all(&bytes).expect("Failed to write bytes");
         }
-        Command::Query { index, query_file, out_file: _ } => {
+        Command::Query {
+            index,
+            query_file,
+            out_file: _,
+        } => {
             let mut index_file = File::open(index).expect("File not found");
             let query_file = File::open(query_file).expect("File not found");
             let mut bytes: Vec<u8> = Vec::new();
@@ -64,7 +73,10 @@ fn main() {
 
             let mut reader = FastaReader::new(query_file);
             for record in reader.records() {
-                let Record { identifier, sequence } = record.expect("failed to read record");
+                let Record {
+                    identifier,
+                    sequence,
+                } = record.expect("failed to read record");
                 let found = dbg.query(sequence);
                 println!("{identifier}: {found}");
             }

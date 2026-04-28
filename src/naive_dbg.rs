@@ -1,6 +1,6 @@
 use crate::bloom_filter::BloomFilter;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use serde::{Serialize, Deserialize};
 
 #[derive(Serialize, Deserialize)]
 pub struct DeBruijnGraph {
