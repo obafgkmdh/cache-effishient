@@ -1,4 +1,8 @@
 use clap::{Parser, Subcommand};
+use std::{io::{Read, Write}, fs::File};
+use lib::{naive_dbg::DeBruijnGraph, fasta::{FastaReader, ParseError, Record}};
+use postcard::{from_bytes, to_stdvec};
+
 
 #[derive(Parser, Debug)]
 #[command(name = "naive", version)]
@@ -20,6 +24,9 @@ enum Command {
         #[arg(long, short = 'i')]
         index: String,
 
+        #[arg(long, short = 'q')]
+        query_file: String,
+
         #[arg(long, short = 'o')]
         out_file: String,
     },
@@ -30,12 +37,37 @@ fn main() {
 
     match &args.command {
         Command::Index { file, out_file } => {
-            println!("got args: {:?} {:?}", file, out_file);
-            todo!();
-        },
-        Command::Query { index, out_file } => {
-            println!("got args: {:?} {:?}", index, out_file);
-            todo!();
-        },
+            let in_file = File::open(file).expect("File not found");
+            let mut out_file = File::create(out_file).expect("Coud not create output file");
+            let mut reader = FastaReader::new(in_file);
+            let sequence: String = match reader.records().next().expect("No record found") {
+                Ok(Record {
+                    identifier: _,
+                    sequence,
+                }) => sequence,
+                Err(ParseError::IoError(err)) => panic!("Parse error: {err:?}"),
+                Err(ParseError::FormatError(err)) => panic!("Format error: {err:?}"),
+            };
+
+            let dbg = DeBruijnGraph::new(3, sequence);
+
+            let bytes: Vec<u8> = to_stdvec(&dbg).unwrap();
+            out_file.write_all(&bytes).expect("Failed to write bytes");
+        }
+        Command::Query { index, query_file, out_file: _ } => {
+            let mut index_file = File::open(index).expect("File not found");
+            let query_file = File::open(query_file).expect("File not found");
+            let mut bytes: Vec<u8> = Vec::new();
+            index_file.read_to_end(&mut bytes).expect("Read failed");
+
+            let dbg: DeBruijnGraph = from_bytes(&bytes).unwrap();
+
+            let mut reader = FastaReader::new(query_file);
+            for record in reader.records() {
+                let Record { identifier, sequence } = record.expect("failed to read record");
+                let found = dbg.query(sequence);
+                println!("{identifier}: {found}");
+            }
+        }
     }
 }
