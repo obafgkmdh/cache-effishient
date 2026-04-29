@@ -1,16 +1,12 @@
 use serde::{Deserialize, Serialize};
-use std::{
-    io,
-    io::{BufReader, BufWriter, Read, Write},
-};
 
 const LN_2: f64 = 0.6931471805599453094_f64;
 
 // Murmur hash
-fn do_hash(key: &str, salt: u32) -> u32 {
+fn do_hash(key: &[u8], salt: u32) -> u32 {
     let mut acc = salt.wrapping_mul(0x5bd1e99).wrapping_add(0xc613fc15);
     acc ^= acc >> 15;
-    for &c in key.as_bytes() {
+    for &c in key {
         acc ^= c as u32;
         acc = acc.wrapping_mul(0x5bd1e99);
         acc ^= acc >> 15;
@@ -37,21 +33,21 @@ impl BloomFilter {
         }
     }
 
-    fn get_position<S: AsRef<str>>(&self, key: S, salt: u32) -> usize {
+    fn get_position<S: AsRef<[u8]>>(&self, key: S, salt: u32) -> usize {
         let hash = do_hash(key.as_ref(), salt) as u64;
 
         // If our hash function is good enough, this trick avoids an expensive modulo operation
         ((hash * self.n_bits as u64) >> 32) as usize
     }
 
-    pub fn insert_key<S: AsRef<str>>(&mut self, key: S) {
+    pub fn insert_key<S: AsRef<[u8]>>(&mut self, key: S) {
         for i in 1..=self.n_hashes {
             let loc = self.get_position(&key, i);
             self.bv[loc / 8] |= 1 << (loc % 8);
         }
     }
 
-    pub fn query_key<S: AsRef<str>>(&self, key: S) -> bool {
+    pub fn query_key<S: AsRef<[u8]>>(&self, key: S) -> bool {
         for i in 1..=self.n_hashes {
             let loc = self.get_position(&key, i);
             if ((self.bv[loc / 8] >> (loc % 8)) & 1) == 0 {
@@ -59,33 +55,6 @@ impl BloomFilter {
             }
         }
         true
-    }
-
-    pub fn serialize_into<W: Write>(&self, writer: &mut W) -> io::Result<()> {
-        let mut writer = BufWriter::new(writer);
-        writer.write_all(&self.n_bits.to_le_bytes())?;
-        writer.write_all(&self.n_hashes.to_le_bytes())?;
-        writer.write_all(&self.bv)
-    }
-
-    pub fn deserialize_from<R: Read>(reader: R) -> io::Result<Self> {
-        let mut reader = BufReader::new(reader);
-        let mut usize_buf: [u8; 8] = [0; 8];
-        reader.read_exact(&mut usize_buf)?;
-        let n_bits = usize::from_le_bytes(usize_buf);
-
-        let mut u32_buf: [u8; 4] = [0; 4];
-        reader.read_exact(&mut u32_buf)?;
-        let n_hashes = u32::from_le_bytes(u32_buf);
-
-        let mut bv: Vec<u8> = vec![];
-        reader.read_to_end(&mut bv)?;
-
-        Ok(Self {
-            n_bits,
-            n_hashes,
-            bv,
-        })
     }
 }
 
