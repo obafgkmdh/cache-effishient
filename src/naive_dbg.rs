@@ -65,4 +65,10 @@ impl DeBruijnGraph {
         }
         true
     }
+
+    pub fn print_stats(&self) {
+        println!("k: {}", self.k);
+        println!("bloom filter: {} bits, {} hashes", self.bloom_filter.n_bits, self.bloom_filter.n_hashes);
+        println!("critical false positives: {}", self.critical_false_positives.len());
+    }
 }

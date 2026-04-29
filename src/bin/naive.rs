@@ -22,6 +22,9 @@ enum Command {
         #[arg(long, short = 'f')]
         file: String,
 
+        #[arg(long, short = 'k')]
+        k: usize,
+
         #[arg(long, short = 'o')]
         out_file: String,
     },
@@ -32,16 +35,20 @@ enum Command {
         #[arg(long, short = 'q')]
         query_file: String,
 
-        #[arg(long, short = 'o')]
+        #[arg(long, short = 'o', default_value = "/dev/stdout")]
         out_file: String,
     },
+    Inspect {
+        #[arg(long, short = 'i')]
+        index: String,
+    }
 }
 
 fn main() {
     let args = Args::parse();
 
     match &args.command {
-        Command::Index { file, out_file } => {
+        Command::Index { file, k, out_file } => {
             let in_file = File::open(file).expect("File not found");
             let mut out_file = File::create(out_file).expect("Coud not create output file");
             let mut reader = FastaReader::new(in_file);
@@ -54,7 +61,7 @@ fn main() {
                 Err(ParseError::FormatError(err)) => panic!("Format error: {err:?}"),
             };
 
-            let dbg = DeBruijnGraph::new(3, sequence);
+            let dbg = DeBruijnGraph::new(*k, sequence);
 
             let bytes: Vec<u8> = to_stdvec(&dbg).unwrap();
             out_file.write_all(&bytes).expect("Failed to write bytes");
@@ -80,6 +87,15 @@ fn main() {
                 let found = dbg.query(sequence);
                 println!("{identifier}: {found}");
             }
+        }
+        Command::Inspect { index } => {
+            let mut index_file = File::open(index).expect("File not found");
+            let mut bytes: Vec<u8> = Vec::new();
+            index_file.read_to_end(&mut bytes).expect("Read failed");
+
+            let dbg: DeBruijnGraph = from_bytes(&bytes).unwrap();
+
+            dbg.print_stats();
         }
     }
 }
