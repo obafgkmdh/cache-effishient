@@ -10,17 +10,19 @@ pub struct DeBruijnGraph {
 }
 
 impl DeBruijnGraph {
-    pub fn new(k: usize, genome: String) -> Self {
+    pub fn new(k: usize, reference_strings: Vec<String>) -> Self {
         let mut seen_edges: HashSet<Vec<u8>> = HashSet::new();
-        let mut last_node: Option<&[u8]> = None;
         // count edges
-        for window in genome.as_str().as_bytes().windows(k) {
-            if let Some(last_node) = last_node {
-                let mut key: Vec<u8> = last_node.to_vec();
-                key.push(*window.last().unwrap());
-                seen_edges.insert(key);
+        for string in reference_strings.iter() {
+            let mut last_node: Option<&[u8]> = None;
+            for window in string.as_str().as_bytes().windows(k - 1) {
+                if let Some(last_node) = last_node {
+                    let mut key: Vec<u8> = last_node.to_vec();
+                    key.push(*window.last().unwrap());
+                    seen_edges.insert(key);
+                }
+                last_node = Some(window);
             }
-            last_node = Some(window);
         }
 
         // build bloom filter of edges
@@ -30,13 +32,15 @@ impl DeBruijnGraph {
         }
 
         let mut critical_false_positives: HashSet<Vec<u8>> = HashSet::new();
-        for window in genome.as_str().as_bytes().windows(k) {
-            let mut key: Vec<u8> = window.to_vec();
-            key.push(0);
-            for c in "ACGT".bytes() {
-                *key.last_mut().unwrap() = c;
-                if bloom_filter.query_key(&key) && !seen_edges.contains(&key) {
-                    critical_false_positives.insert(key.clone());
+        for string in reference_strings.iter() {
+            for window in string.as_str().as_bytes().windows(k - 1) {
+                let mut key: Vec<u8> = window.to_vec();
+                key.push(0);
+                for c in "ACGT".bytes() {
+                    *key.last_mut().unwrap() = c;
+                    if bloom_filter.query_key(&key) && !seen_edges.contains(&key) {
+                        critical_false_positives.insert(key.clone());
+                    }
                 }
             }
         }
@@ -48,9 +52,9 @@ impl DeBruijnGraph {
         }
     }
 
-    pub fn query(&self, q: String) -> bool {
+    pub fn query<S: AsRef<[u8]>>(&self, q: S) -> bool {
         let mut last_node: Option<&[u8]> = None;
-        for window in q.as_str().as_bytes().windows(self.k) {
+        for window in q.as_ref().windows(self.k) {
             if let Some(last_node) = last_node {
                 let mut key: Vec<u8> = last_node.to_vec();
                 key.push(*window.last().unwrap());
@@ -68,7 +72,13 @@ impl DeBruijnGraph {
 
     pub fn print_stats(&self) {
         println!("k: {}", self.k);
-        println!("bloom filter: {} bits, {} hashes", self.bloom_filter.n_bits, self.bloom_filter.n_hashes);
-        println!("critical false positives: {}", self.critical_false_positives.len());
+        println!(
+            "bloom filter: {} bits, {} hashes",
+            self.bloom_filter.n_bits, self.bloom_filter.n_hashes
+        );
+        println!(
+            "critical false positives: {}",
+            self.critical_false_positives.len()
+        );
     }
 }

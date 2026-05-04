@@ -41,7 +41,7 @@ enum Command {
     Inspect {
         #[arg(long, short = 'i')]
         index: String,
-    }
+    },
 }
 
 fn main() {
@@ -52,16 +52,19 @@ fn main() {
             let in_file = File::open(file).expect("File not found");
             let mut out_file = File::create(out_file).expect("Coud not create output file");
             let mut reader = FastaReader::new(in_file);
-            let sequence: String = match reader.records().next().expect("No record found") {
-                Ok(Record {
-                    identifier: _,
-                    sequence,
-                }) => sequence,
-                Err(ParseError::IoError(err)) => panic!("Parse error: {err:?}"),
-                Err(ParseError::FormatError(err)) => panic!("Format error: {err:?}"),
-            };
+            let sequences: Vec<String> = reader
+                .records()
+                .map(|record| match record {
+                    Ok(Record {
+                        identifier: _,
+                        sequence,
+                    }) => sequence,
+                    Err(ParseError::IoError(err)) => panic!("Parse error: {err:?}"),
+                    Err(ParseError::FormatError(err)) => panic!("Format error: {err:?}"),
+                })
+                .collect();
 
-            let dbg = DeBruijnGraph::new(*k, sequence);
+            let dbg = DeBruijnGraph::new(*k, sequences);
 
             let bytes: Vec<u8> = to_stdvec(&dbg).unwrap();
             out_file.write_all(&bytes).expect("Failed to write bytes");
