@@ -38,7 +38,7 @@ impl IntVector {
 
             self.buf[ele_idx] |= acc << ele_offset;
             if ele_offset + self.n_bits as usize > 64 {
-                self.buf[ele_idx + 1] |= acc >> (64 - ele_offset);
+                self.buf[ele_idx + 1] |= acc.unbounded_shr(64 - ele_offset as u32);
             }
 
             let next_offset = bit_idx + self.n_bits as usize;
