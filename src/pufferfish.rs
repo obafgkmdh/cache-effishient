@@ -50,7 +50,7 @@ impl<HM: HashMapLike> PufferfishIndex<HM> {
                     *nodes.entry(key.clone()).or_default() |= 1 << index_in_acgt(next);
                     // insert back edge
                     key.push(next);
-                    *nodes.entry(key[1..].to_vec()).or_default() |= 16 << index_in_acgt(key[0]);
+                    *nodes.entry(window.to_vec()).or_default() |= 16 << index_in_acgt(key[0]);
                 }
                 last_node = Some(window);
             }
@@ -62,42 +62,52 @@ impl<HM: HashMapLike> PufferfishIndex<HM> {
         let mut pos: Vec<(Vec<u8>, usize)> = Vec::new();
         let mut bv: Vec<u64> = Vec::new();
         for (node, edge_info) in &nodes {
-            let forward_edges = edge_info & 0xf;
-            let back_edges = edge_info >> 4;
+            let mut forward_edges = edge_info & 0xf;
+            let mut back_edges = edge_info >> 4;
             if back_edges.is_power_of_two() {
-                // not a junction
-                continue;
-            }
-            // walk the graph
-            for (i, &c) in b"ACGT".iter().enumerate() {
-                if forward_edges >> i & 1 == 1 {
-                    // start a new unipath
-                    pos.push((node.clone(), useq.len()));
-
-                    let mut unipath: Vec<u8> = node.clone();
-                    unipath.push(c);
-                    loop {
-                        let key: Vec<u8> = unipath[unipath.len() - k..].to_vec();
-                        if key == *node {
-                            // we looped
-                            break;
-                        }
-
-                        pos.push((key.clone(), useq.len() + unipath.len() - k));
-
-                        let forward_edge_info = nodes[&key] & 0xf;
-                        if !forward_edge_info.is_power_of_two() {
-                            // reached junction
-                            break;
-                        }
-                        unipath.push(b"ACGT"[forward_edge_info.ilog2() as usize]);
-                    }
-                    useq.extend(unipath);
-                    let bit_idx = useq.len() - 1;
-                    bv.resize_with(useq.len().div_ceil(64), Default::default);
-                    bv[bit_idx / 64] |= 1 << (bit_idx % 64);
+                // does the previous node have multiple forward edges?
+                let mut prev_node = vec![b"ACGT"[back_edges.ilog2() as usize]];
+                prev_node.extend(&node[..k - 1]);
+                let prev_forward_edges = nodes[&prev_node] & 0xf;
+                if prev_forward_edges.is_power_of_two() {
+                    // not a junction
+                    continue;
                 }
             }
+
+            // start a new unipath at current node
+            let mut unipath: Vec<u8> = node.clone();
+            let mut key: Vec<u8> = node.clone();
+            pos.push((key.clone(), useq.len()));
+            loop {
+                if !forward_edges.is_power_of_two() {
+                    // reached junction
+                    break;
+                }
+                let next = b"ACGT"[forward_edges.ilog2() as usize];
+                key.remove(0);
+                key.push(next);
+
+                let edge_info = nodes[&key];
+                forward_edges = edge_info & 0xf;
+                back_edges = edge_info >> 4;
+
+                if !back_edges.is_power_of_two() {
+                    // reached junction
+                    break;
+                }
+                if key == *node {
+                    // we looped
+                    break;
+                }
+
+                unipath.push(next);
+                pos.push((key.clone(), useq.len() + unipath.len() - k));
+            }
+            useq.extend(unipath);
+            let bit_idx = useq.len() - 1;
+            bv.resize_with(useq.len().div_ceil(64), Default::default);
+            bv[bit_idx / 64] |= 1 << (bit_idx % 64);
         }
 
         let h: HM = HM::from_iter(pos);
