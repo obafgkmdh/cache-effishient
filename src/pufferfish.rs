@@ -1,110 +1,151 @@
 use crate::{bitvector::BitVector, util::index_in_acgt};
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap};
+use std::collections::{HashMap, HashSet};
 
 pub trait HashMapLike: FromIterator<(Vec<u8>, usize)> {
     fn get(&self, index: &Vec<u8>) -> Option<&usize>;
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize)]
 pub struct PufferfishIndex<HM: HashMapLike> {
     k: usize,
     h: HM,
     useq: Vec<u8>,
     bv: BitVector,
+    utab: Vec<u8>,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct HashMapWrapper {
-    h: HashMap<Vec<u8>, usize>,
-}
-
-impl FromIterator<(Vec<u8>, usize)> for HashMapWrapper {
-    fn from_iter<T: IntoIterator<Item=(Vec<u8>, usize)>>(iter: T) -> Self {
-        Self {
-            h: HashMap::from_iter(iter)
-        }
-    }
-}
-
-impl HashMapLike for HashMapWrapper {
+impl HashMapLike for HashMap<Vec<u8>, usize> {
     fn get(&self, index: &Vec<u8>) -> Option<&usize> {
-        self.h.get(index)
+        self.get(index)
     }
 }
 
 // HM can (and should) later be swapped out with a MPFH
-pub type DefaultPufferfishIndex = PufferfishIndex<HashMapWrapper>;
+pub type DefaultPufferfishIndex = PufferfishIndex<HashMap<Vec<u8>, usize>>;
 
 impl<HM: HashMapLike> PufferfishIndex<HM> {
-    pub fn new(k: usize, reference_strings: Vec<String>) -> Self {
+    pub fn new<S: AsRef<[u8]>>(k: usize, reference_strings: Vec<S>) -> Self {
+        let n_colors = reference_strings.len();
+        let color_bytes = n_colors.div_ceil(8);
+
         // Build De Bruijn graph
-        let mut nodes: HashMap<Vec<u8>, u8> = HashMap::new();
-        for string in reference_strings.iter() {
+        // Hashmap stores forward/back edges, bitvec of colors, and if node is start/end
+        let mut nodes: HashMap<Vec<u8>, (u8, Vec<u8>, u8)> = HashMap::new();
+        for (color, string) in reference_strings.iter().enumerate() {
+            let (color_idx, color_bit) = (color / 8, 1u8 << (color % 8));
+
             let mut last_node: Option<&[u8]> = None;
-            for window in string.as_str().as_bytes().windows(k) {
+            for window in string.as_ref().windows(k) {
+                // insert node, add color
+                let cur_entry = nodes
+                    .entry(window.to_vec())
+                    .or_insert_with(|| (0, vec![0; color_bytes], 0));
+                cur_entry.1[color_idx] |= color_bit;
+
                 if let Some(last_node) = last_node {
                     // insert forward edge
-                    let mut key: Vec<u8> = last_node.to_vec();
                     let next = *window.last().unwrap();
-                    *nodes.entry(key.clone()).or_default() |= 1 << index_in_acgt(next);
+                    let bit_pattern_next = 1 << index_in_acgt(next);
+                    nodes.get_mut(&last_node.to_vec()).unwrap().0 |= bit_pattern_next;
+
                     // insert back edge
-                    key.push(next);
-                    *nodes.entry(window.to_vec()).or_default() |= 16 << index_in_acgt(key[0]);
+                    let bit_pattern_prev = 16 << index_in_acgt(last_node[0]);
+                    nodes.get_mut(&window.to_vec()).unwrap().0 |= bit_pattern_prev;
+                } else {
+                    // mark node as start of sequence
+                    cur_entry.2 |= 1;
                 }
                 last_node = Some(window);
             }
+
+            if let Some(last_node) = last_node {
+                // mark last node as end of sequence
+                nodes.get_mut(&last_node.to_vec()).unwrap().2 |= 2;
+            }
         }
 
-        // Find unipaths
-        // FIXME: this will not find some loops
+        // Find junctions (all places where a unipath starts)
+        let mut junctions: HashSet<Vec<u8>> = HashSet::new();
+        for (node, (edge_info, _, start_end_info)) in &nodes {
+            if start_end_info & 1 == 1 {
+                // sequence starts are junctions
+                junctions.insert(node.clone());
+                continue;
+            }
+
+            let back_edges = edge_info >> 4;
+            let one_back_edge = back_edges.is_power_of_two();
+
+            if !one_back_edge {
+                // 0 or multiple back edges is a junction
+                junctions.insert(node.clone());
+                continue;
+            }
+
+            // look at previous node
+            let mut prev_node = vec![b"ACGT"[back_edges.ilog2() as usize]];
+            prev_node.extend(&node[..k - 1]);
+
+            let (prev_edge_info, _, prev_start_end_info) = nodes[&prev_node];
+
+            if prev_start_end_info & 2 == 2 {
+                // nodes following sequence ends are junctions
+                junctions.insert(node.clone());
+                continue;
+            }
+
+            let prev_forward_edges = prev_edge_info & 0xf;
+            let one_prev_forward_edge = prev_forward_edges.is_power_of_two();
+            if !one_prev_forward_edge {
+                // multiple forward edges on prev node is a junction
+                junctions.insert(node.clone());
+            }
+        }
+
         let mut useq: Vec<u8> = Vec::new();
         let mut pos: Vec<(Vec<u8>, usize)> = Vec::new();
         let mut bv: Vec<u64> = Vec::new();
-        for (node, edge_info) in &nodes {
-            let mut forward_edges = edge_info & 0xf;
-            let mut back_edges = edge_info >> 4;
-            if back_edges.is_power_of_two() {
-                // does the previous node have multiple forward edges?
-                let mut prev_node = vec![b"ACGT"[back_edges.ilog2() as usize]];
-                prev_node.extend(&node[..k - 1]);
-                let prev_forward_edges = nodes[&prev_node] & 0xf;
-                if prev_forward_edges.is_power_of_two() {
-                    // not a junction
-                    continue;
-                }
-            }
+        let mut utab: Vec<u8> = Vec::new();
 
-            // start a new unipath at current node
+        // Create a unipath at each junction
+        for node in junctions.iter() {
             let mut unipath: Vec<u8> = node.clone();
             let mut key: Vec<u8> = node.clone();
-            pos.push((key.clone(), useq.len()));
+            let mut useq_idx = useq.len();
+            pos.push((key.clone(), useq_idx));
+            useq_idx += 1;
+
+            let (edge_info, colors, _) = &nodes[&key];
+            let mut forward_edges = edge_info & 0xf;
+
+            // create entry in utab
+            utab.extend(colors);
+
             loop {
                 if !forward_edges.is_power_of_two() {
-                    // reached junction
+                    // multiple paths
                     break;
                 }
                 let next = b"ACGT"[forward_edges.ilog2() as usize];
                 key.remove(0);
                 key.push(next);
 
-                let edge_info = nodes[&key];
-                forward_edges = edge_info & 0xf;
-                back_edges = edge_info >> 4;
+                if junctions.contains(&key) {
+                    // reached a junction
+                    break;
+                }
 
-                if !back_edges.is_power_of_two() {
-                    // reached junction
-                    break;
-                }
-                if key == *node {
-                    // we looped
-                    break;
-                }
+                let (edge_info, _, _) = &nodes[&key];
+                forward_edges = edge_info & 0xf;
 
                 unipath.push(next);
-                pos.push((key.clone(), useq.len() + unipath.len() - k));
+                pos.push((key.clone(), useq_idx));
+                useq_idx += 1;
             }
             useq.extend(unipath);
+
+            // set bit in bv
             let bit_idx = useq.len() - 1;
             bv.resize_with(useq.len().div_ceil(64), Default::default);
             bv[bit_idx / 64] |= 1 << (bit_idx % 64);
@@ -112,14 +153,28 @@ impl<HM: HashMapLike> PufferfishIndex<HM> {
 
         let h: HM = HM::from_iter(pos);
         let bv = BitVector::new(useq.len(), bv);
-        Self { k, h, useq, bv }
+        Self {
+            k,
+            h,
+            useq,
+            bv,
+            utab,
+        }
     }
 
     pub fn query<S: AsRef<[u8]>>(&self, q: S) -> bool {
+        // TODO: this should really query consecutive k-mers instead of using windows
         for window in q.as_ref().windows(self.k) {
             let pos = self.h.get(&window.to_vec());
             if let Some(&pos) = pos {
                 if self.useq[pos..pos + self.k] != *window {
+                    // k-mer not in useq
+                    return false;
+                }
+                let rank1 = self.bv.rank(pos);
+                let rank2 = self.bv.rank(pos + self.k - 1);
+                if rank1 != rank2 {
+                    // crossed useq boundary
                     return false;
                 }
             } else {
@@ -132,5 +187,20 @@ impl<HM: HashMapLike> PufferfishIndex<HM> {
     pub fn print_stats(&self) {
         println!("k: {}", self.k);
         println!("useq size: {}", self.useq.len());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn basic_test() {
+        let sequences = vec!["CTAAGAT", "CGATGCA", "TAAGAGG"];
+        let index = DefaultPufferfishIndex::new(3, sequences);
+
+        assert!(index.query("CTAAGAT"));
+        assert!(index.query("CGATGCA"));
+        assert!(index.query("TAAGAGG"));
     }
 }
