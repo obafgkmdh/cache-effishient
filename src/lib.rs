@@ -3,6 +3,7 @@
 pub mod bitvector;
 pub mod bloom_filter;
 pub mod fasta;
+pub mod mphf;
 pub mod naive_dbg;
 pub mod pufferfish;
 mod util;

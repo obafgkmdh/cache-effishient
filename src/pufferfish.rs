@@ -1,10 +1,10 @@
-use crate::{bitvector::BitVector, util::index_in_acgt};
+use crate::{
+    bitvector::BitVector,
+    mphf::MPHF,
+    util::{HashMapLike, index_in_acgt},
+};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
-
-pub trait HashMapLike: FromIterator<(Vec<u8>, usize)> {
-    fn get(&self, index: &Vec<u8>) -> Option<&usize>;
-}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PufferfishIndex<HM: HashMapLike> {
@@ -15,14 +15,9 @@ pub struct PufferfishIndex<HM: HashMapLike> {
     utab: Vec<u8>,
 }
 
-impl HashMapLike for HashMap<Vec<u8>, usize> {
-    fn get(&self, index: &Vec<u8>) -> Option<&usize> {
-        self.get(index)
-    }
-}
-
-// HM can (and should) later be swapped out with a MPFH
-pub type DefaultPufferfishIndex = PufferfishIndex<HashMap<Vec<u8>, usize>>;
+// HM can (and should) later be swapped out with a MPHF
+pub type HashMapPufferfishIndex = PufferfishIndex<HashMap<Vec<u8>, usize>>;
+pub type DefaultPufferfishIndex = PufferfishIndex<MPHF>;
 
 impl<HM: HashMapLike> PufferfishIndex<HM> {
     pub fn new<S: AsRef<[u8]>>(k: usize, reference_strings: Vec<S>) -> Self {

@@ -1,18 +1,7 @@
+use crate::util::murmur_hash_n;
 use serde::{Deserialize, Serialize};
 
 const LN_2: f64 = 0.6931471805599453094_f64;
-
-// Murmur hash
-fn do_hash(key: &[u8], salt: u32) -> u32 {
-    let mut acc = salt.wrapping_mul(0x5bd1e99).wrapping_add(0xc613fc15);
-    acc ^= acc >> 15;
-    for &c in key {
-        acc ^= c as u32;
-        acc = acc.wrapping_mul(0x5bd1e99);
-        acc ^= acc >> 15;
-    }
-    acc
-}
 
 #[derive(Serialize, Deserialize)]
 pub struct BloomFilter {
@@ -34,10 +23,7 @@ impl BloomFilter {
     }
 
     fn get_position<S: AsRef<[u8]>>(&self, key: S, salt: u32) -> usize {
-        let hash = do_hash(key.as_ref(), salt) as u64;
-
-        // If our hash function is good enough, this trick avoids an expensive modulo operation
-        ((hash * self.n_bits as u64) >> 32) as usize
+        murmur_hash_n(key.as_ref(), salt, self.n_bits)
     }
 
     pub fn insert_key<S: AsRef<[u8]>>(&mut self, key: S) {

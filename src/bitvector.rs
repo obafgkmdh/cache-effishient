@@ -62,14 +62,14 @@ pub struct BitVector {
 
 impl BitVector {
     pub fn new(n_bits: usize, qwords: Vec<u64>) -> Self {
-        let n_bit_width = (n_bits + 1).bit_width() as usize;
+        let n_bit_width = n_bits.bit_width() as usize;
         let chunk_nbits = n_bit_width * n_bit_width;
         let subchunk_nbits = n_bit_width.div_ceil(2);
         let n_chunks = n_bits.div_ceil(chunk_nbits);
         let n_subchunks = chunk_nbits.div_ceil(subchunk_nbits);
 
         let mut cumulative_ranks = IntVector::new(n_bit_width as u8, n_chunks);
-        let mut cumulative_subranks = IntVector::new(chunk_nbits as u8, n_chunks * n_subchunks);
+        let mut cumulative_subranks = IntVector::new(chunk_nbits.bit_width() as u8, n_chunks * n_subchunks);
 
         let mut bit_idx = 0usize;
 
