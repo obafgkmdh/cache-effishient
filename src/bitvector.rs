@@ -2,19 +2,19 @@ use serde::{Deserialize, Serialize};
 use std::{cmp::min, ops::Index};
 
 #[derive(Debug, Serialize, Deserialize)]
-struct IntVector {
+pub struct IntVector {
     n_bits: u8, // must be <= 64
     buf: Vec<u64>,
 }
 
 impl IntVector {
-    fn new(n_bits: u8, size: usize) -> Self {
+    pub fn new(n_bits: u8, size: usize) -> Self {
         let buf_len = (size * n_bits as usize).div_ceil(64);
         let buf: Vec<u64> = vec![0; buf_len];
         Self { n_bits, buf }
     }
 
-    fn get(&self, idx: usize) -> u64 {
+    pub fn get(&self, idx: usize) -> u64 {
         let mask = (1 << self.n_bits as usize) - 1;
         let bit_idx = idx * self.n_bits as usize;
         let (ele_idx, ele_offset) = (bit_idx / 64, bit_idx % 64);
@@ -23,6 +23,26 @@ impl IntVector {
             .map_or(0, |&x| x)
             .funnel_shr(self.buf[ele_idx], ele_offset as u32)
             & mask
+    }
+
+    pub fn set(&mut self, idx: usize, value: u64) {
+        let mask = (1 << self.n_bits as usize) - 1;
+        let bit_idx = idx * self.n_bits as usize;
+        let (ele_idx, ele_offset) = (bit_idx / 64, bit_idx % 64);
+
+        // clear low bits
+        self.buf[ele_idx] &= !(mask << ele_offset);
+
+        // set low bits
+        self.buf[ele_idx] |= value << ele_offset;
+
+        if ele_offset + self.n_bits as usize > 64 {
+            // clear high bits
+            self.buf[ele_idx + 1] &= !(mask.unbounded_shr(64 - ele_offset as u32));
+
+            // set high bits
+            self.buf[ele_idx + 1] |= value.unbounded_shr(64 - ele_offset as u32);
+        }
     }
 
     // Accumulate ranks starting from `start_index`, using popcount from `iter`
@@ -171,7 +191,7 @@ impl BitVector {
 impl Index<usize> for BitVector {
     type Output = bool;
 
-    fn index(&self, index: usize) -> &bool {
+    fn index(&self, index: usize) -> &Self::Output {
         if self.access(index) { &true } else { &false }
     }
 }

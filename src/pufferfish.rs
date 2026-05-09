@@ -1,13 +1,14 @@
 use crate::{
     bitvector::BitVector,
     mphf::MPHF,
-    util::{HashMapLike, index_in_acgt},
+    util::{MapLike, index_in_acgt},
 };
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::{collections::{HashMap, HashSet}, time::Instant};
+use log::trace;
 
 #[derive(Debug, Serialize, Deserialize)]
-pub struct PufferfishIndex<HM: HashMapLike> {
+pub struct PufferfishIndex<HM: MapLike> {
     k: usize,
     h: HM,
     useq: Vec<u8>,
@@ -19,14 +20,17 @@ pub struct PufferfishIndex<HM: HashMapLike> {
 pub type HashMapPufferfishIndex = PufferfishIndex<HashMap<Vec<u8>, usize>>;
 pub type DefaultPufferfishIndex = PufferfishIndex<MPHF>;
 
-impl<HM: HashMapLike> PufferfishIndex<HM> {
+impl<HM: MapLike> PufferfishIndex<HM> {
     pub fn new<S: AsRef<[u8]>>(k: usize, reference_strings: Vec<S>) -> Self {
         let n_colors = reference_strings.len();
         let color_bytes = n_colors.div_ceil(8);
 
+        trace!("building pufferfish index (k = {})", k);
+        let start = Instant::now();
+
         // Build De Bruijn graph
         // Hashmap stores forward/back edges, bitvec of colors, and if node is start/end
-        let mut nodes: HashMap<Vec<u8>, (u8, Vec<u8>, u8)> = HashMap::new();
+        let mut nodes: HashMap<&[u8], (u8, Vec<u8>, u8)> = HashMap::new();
         for (color, string) in reference_strings.iter().enumerate() {
             let (color_idx, color_bit) = (color / 8, 1u8 << (color % 8));
 
@@ -34,19 +38,19 @@ impl<HM: HashMapLike> PufferfishIndex<HM> {
             for window in string.as_ref().windows(k) {
                 // insert node, add color
                 let cur_entry = nodes
-                    .entry(window.to_vec())
+                    .entry(window)
                     .or_insert_with(|| (0, vec![0; color_bytes], 0));
                 cur_entry.1[color_idx] |= color_bit;
 
                 if let Some(last_node) = last_node {
+                    // insert back edge
+                    let bit_pattern_prev = 16 << index_in_acgt(last_node[0]);
+                    cur_entry.0 |= bit_pattern_prev;
+
                     // insert forward edge
                     let next = *window.last().unwrap();
                     let bit_pattern_next = 1 << index_in_acgt(next);
-                    nodes.get_mut(&last_node.to_vec()).unwrap().0 |= bit_pattern_next;
-
-                    // insert back edge
-                    let bit_pattern_prev = 16 << index_in_acgt(last_node[0]);
-                    nodes.get_mut(&window.to_vec()).unwrap().0 |= bit_pattern_prev;
+                    nodes.get_mut(last_node).unwrap().0 |= bit_pattern_next;
                 } else {
                     // mark node as start of sequence
                     cur_entry.2 |= 1;
@@ -56,16 +60,20 @@ impl<HM: HashMapLike> PufferfishIndex<HM> {
 
             if let Some(last_node) = last_node {
                 // mark last node as end of sequence
-                nodes.get_mut(&last_node.to_vec()).unwrap().2 |= 2;
+                nodes.get_mut(last_node).unwrap().2 |= 2;
             }
         }
 
+        trace!("build graph: {}ms", (Instant::now() - start).as_millis());
+
+        let start = Instant::now();
+
         // Find junctions (all places where a unipath starts)
-        let mut junctions: HashSet<Vec<u8>> = HashSet::new();
+        let mut junctions: HashSet<&[u8]> = HashSet::new();
         for (node, (edge_info, _, start_end_info)) in &nodes {
             if start_end_info & 1 == 1 {
                 // sequence starts are junctions
-                junctions.insert(node.clone());
+                junctions.insert(node);
                 continue;
             }
 
@@ -74,7 +82,7 @@ impl<HM: HashMapLike> PufferfishIndex<HM> {
 
             if !one_back_edge {
                 // 0 or multiple back edges is a junction
-                junctions.insert(node.clone());
+                junctions.insert(node);
                 continue;
             }
 
@@ -82,11 +90,11 @@ impl<HM: HashMapLike> PufferfishIndex<HM> {
             let mut prev_node = vec![b"ACGT"[back_edges.ilog2() as usize]];
             prev_node.extend(&node[..k - 1]);
 
-            let (prev_edge_info, _, prev_start_end_info) = nodes[&prev_node];
+            let (prev_edge_info, _, prev_start_end_info) = nodes[&prev_node[..]];
 
             if prev_start_end_info & 2 == 2 {
                 // nodes following sequence ends are junctions
-                junctions.insert(node.clone());
+                junctions.insert(node);
                 continue;
             }
 
@@ -94,9 +102,13 @@ impl<HM: HashMapLike> PufferfishIndex<HM> {
             let one_prev_forward_edge = prev_forward_edges.is_power_of_two();
             if !one_prev_forward_edge {
                 // multiple forward edges on prev node is a junction
-                junctions.insert(node.clone());
+                junctions.insert(node);
             }
         }
+
+        trace!("find junctions: {}ms", (Instant::now() - start).as_millis());
+
+        let start = Instant::now();
 
         let mut useq: Vec<u8> = Vec::new();
         let mut pos: Vec<(Vec<u8>, usize)> = Vec::new();
@@ -105,13 +117,13 @@ impl<HM: HashMapLike> PufferfishIndex<HM> {
 
         // Create a unipath at each junction
         for node in junctions.iter() {
-            let mut unipath: Vec<u8> = node.clone();
-            let mut key: Vec<u8> = node.clone();
+            let mut unipath: Vec<u8> = node.to_vec();
+            let mut key: Vec<u8> = node.to_vec();
             let mut useq_idx = useq.len();
             pos.push((key.clone(), useq_idx));
             useq_idx += 1;
 
-            let (edge_info, colors, _) = &nodes[&key];
+            let (edge_info, colors, _) = &nodes[&key[..]];
             let mut forward_edges = edge_info & 0xf;
 
             // create entry in utab
@@ -126,12 +138,12 @@ impl<HM: HashMapLike> PufferfishIndex<HM> {
                 key.remove(0);
                 key.push(next);
 
-                if junctions.contains(&key) {
+                if junctions.contains(&key[..]) {
                     // reached a junction
                     break;
                 }
 
-                let (edge_info, _, _) = &nodes[&key];
+                let (edge_info, _, _) = &nodes[&key[..]];
                 forward_edges = edge_info & 0xf;
 
                 unipath.push(next);
@@ -146,8 +158,20 @@ impl<HM: HashMapLike> PufferfishIndex<HM> {
             bv[bit_idx / 64] |= 1 << (bit_idx % 64);
         }
 
+        trace!("find unipaths: {}ms", (Instant::now() - start).as_millis());
+
+        let start = Instant::now();
+
         let h: HM = HM::from_iter(pos);
+
+        trace!("create map: {}ms", (Instant::now() - start).as_millis());
+
+        let start = Instant::now();
+
         let bv = BitVector::new(useq.len(), bv);
+
+        trace!("create bv: {}ms", (Instant::now() - start).as_millis());
+
         Self {
             k,
             h,
@@ -161,7 +185,7 @@ impl<HM: HashMapLike> PufferfishIndex<HM> {
         // TODO: this should really query consecutive k-mers instead of using windows
         for window in q.as_ref().windows(self.k) {
             let pos = self.h.get(&window.to_vec());
-            if let Some(&pos) = pos {
+            if let Some(pos) = pos {
                 if self.useq[pos..pos + self.k] != *window {
                     // k-mer not in useq
                     return false;

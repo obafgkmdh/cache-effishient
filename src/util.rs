@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-pub trait HashMapLike: FromIterator<(Vec<u8>, usize)> {
-    fn get(&self, key: &Vec<u8>) -> Option<&usize>;
+pub trait MapLike: FromIterator<(Vec<u8>, usize)> {
+    fn get(&self, key: &Vec<u8>) -> Option<usize>;
 }
 
-impl HashMapLike for HashMap<Vec<u8>, usize> {
-    fn get(&self, key: &Vec<u8>) -> Option<&usize> {
-        self.get(key)
+impl MapLike for HashMap<Vec<u8>, usize> {
+    fn get(&self, key: &Vec<u8>) -> Option<usize> {
+        self.get(key).copied()
     }
 }
 

@@ -8,6 +8,7 @@ use std::{
     fs::File,
     io::{Read, Write},
 };
+use env_logger;
 
 #[derive(Parser, Debug)]
 #[command(name = "naive", version)]
@@ -45,6 +46,8 @@ enum Command {
 }
 
 fn main() {
+    env_logger::init();
+
     let args = Args::parse();
 
     match &args.command {

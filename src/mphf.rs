@@ -1,6 +1,6 @@
 use crate::{
-    bitvector::BitVector,
-    util::{HashMapLike, murmur_hash_n},
+    bitvector::{IntVector, BitVector},
+    util::{MapLike, murmur_hash_n},
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, default::Default};
@@ -9,16 +9,19 @@ use std::{collections::HashSet, default::Default};
 pub struct MPHF {
     size: usize,
     bv: BitVector,
-    values: Vec<usize>,
+    values: IntVector,
 }
 
 impl FromIterator<(Vec<u8>, usize)> for MPHF {
     fn from_iter<T: IntoIterator<Item = (Vec<u8>, usize)>>(iter: T) -> Self {
         let mut kv: HashSet<(Vec<u8>, usize)> = iter.into_iter().collect();
 
+        let max_value: usize = kv.iter().map(|(_, v)| *v).max().unwrap();
+        let n_bits = max_value.bit_width();
+
         let size = kv.len();
 
-        let mut values: Vec<usize> = vec![0; size];
+        let mut values = IntVector::new(n_bits.try_into().unwrap(), size);
 
         let mut bv: Vec<u64> = Vec::with_capacity(size.div_ceil(64));
 
@@ -48,7 +51,7 @@ impl FromIterator<(Vec<u8>, usize)> for MPHF {
                 let bv_bit = bv[bv_index] >> bv_shift & 1;
                 if bv_bit == 0 {
                     bv[bv_index] |= 1 << bv_shift;
-                    values[n_processed + hash] = *value;
+                    values.set(n_processed + hash, *value as u64);
                 } else {
                     // mark collision
                     bv[bv_index] &= !(1 << bv_shift);
@@ -61,7 +64,8 @@ impl FromIterator<(Vec<u8>, usize)> for MPHF {
             for i in 0..n_keys {
                 let (bv_index, bv_shift) = (bit_offset / 64, bit_offset % 64);
                 if bv[bv_index] >> bv_shift & 1 == 1 {
-                    values[value_idx] = values[n_processed + i];
+                    let v = values.get(n_processed + i);
+                    values.set(value_idx, v);
                     value_idx += 1;
                 }
                 bit_offset += 1;
@@ -87,8 +91,8 @@ impl FromIterator<(Vec<u8>, usize)> for MPHF {
     }
 }
 
-impl HashMapLike for MPHF {
-    fn get(&self, key: &Vec<u8>) -> Option<&usize> {
+impl MapLike for MPHF {
+    fn get(&self, key: &Vec<u8>) -> Option<usize> {
         let mut salt = 0;
         let mut bit_offset = 0;
         let mut keys_remaining = self.size;
@@ -97,7 +101,7 @@ impl HashMapLike for MPHF {
             let bv_bit = self.bv[bit_offset + hash];
             if bv_bit {
                 let value_idx = self.bv.rank(bit_offset + hash).unwrap();
-                return Some(&self.values[value_idx]);
+                return Some(self.values.get(value_idx) as usize);
             }
 
             bit_offset += keys_remaining;
@@ -121,7 +125,7 @@ mod tests {
         let mphf = MPHF::from_iter(kv.iter().cloned());
 
         for (k, v) in kv.into_iter() {
-            assert_eq!(mphf.get(&k), Some(&v));
+            assert_eq!(mphf.get(&k), Some(v));
         }
     }
 }
