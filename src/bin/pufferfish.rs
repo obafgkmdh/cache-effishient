@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use env_logger;
 use lib::{
     fasta::{FastaReader, ParseError, Record},
     pufferfish::DefaultPufferfishIndex,
@@ -8,7 +9,6 @@ use std::{
     fs::File,
     io::{Read, Write},
 };
-use env_logger;
 
 #[derive(Parser, Debug)]
 #[command(name = "naive", version)]

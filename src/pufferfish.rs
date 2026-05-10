@@ -1,23 +1,26 @@
 use crate::{
     bitvector::BitVector,
     mphf::MPHF,
-    util::{MapLike, index_in_acgt},
+    util::{MapLike, Sequence, index_in_acgt},
 };
-use serde::{Deserialize, Serialize};
-use std::{collections::{HashMap, HashSet}, time::Instant};
 use log::trace;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PufferfishIndex<HM: MapLike> {
     k: usize,
     h: HM,
-    useq: Vec<u8>,
+    useq: Sequence,
     bv: BitVector,
     utab: Vec<u8>,
 }
 
 // HM can (and should) later be swapped out with a MPHF
-pub type HashMapPufferfishIndex = PufferfishIndex<HashMap<Vec<u8>, usize>>;
+pub type HashMapPufferfishIndex = PufferfishIndex<HashMap<Sequence, usize>>;
 pub type DefaultPufferfishIndex = PufferfishIndex<MPHF>;
 
 impl<HM: MapLike> PufferfishIndex<HM> {
@@ -28,6 +31,23 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         trace!("building pufferfish index (k = {})", k);
         let start = Instant::now();
 
+        let reference_strings: Vec<Vec<u8>> = reference_strings
+            .into_iter()
+            .map(|s| {
+                s.as_ref()
+                    .into_iter()
+                    .map(|&c| index_in_acgt(c) as u8)
+                    .collect()
+            })
+            .collect();
+
+        trace!(
+            "to 2-bit representation: {}ms",
+            (Instant::now() - start).as_millis()
+        );
+
+        let start = Instant::now();
+
         // Build De Bruijn graph
         // Hashmap stores forward/back edges, bitvec of colors, and if node is start/end
         let mut nodes: HashMap<&[u8], (u8, Vec<u8>, u8)> = HashMap::new();
@@ -35,7 +55,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
             let (color_idx, color_bit) = (color / 8, 1u8 << (color % 8));
 
             let mut last_node: Option<&[u8]> = None;
-            for window in string.as_ref().windows(k) {
+            for window in string.windows(k) {
                 // insert node, add color
                 let cur_entry = nodes
                     .entry(window)
@@ -44,12 +64,12 @@ impl<HM: MapLike> PufferfishIndex<HM> {
 
                 if let Some(last_node) = last_node {
                     // insert back edge
-                    let bit_pattern_prev = 16 << index_in_acgt(last_node[0]);
+                    let bit_pattern_prev = 16 << last_node[0];
                     cur_entry.0 |= bit_pattern_prev;
 
                     // insert forward edge
                     let next = *window.last().unwrap();
-                    let bit_pattern_next = 1 << index_in_acgt(next);
+                    let bit_pattern_next = 1 << next;
                     nodes.get_mut(last_node).unwrap().0 |= bit_pattern_next;
                 } else {
                     // mark node as start of sequence
@@ -87,7 +107,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
             }
 
             // look at previous node
-            let mut prev_node = vec![b"ACGT"[back_edges.ilog2() as usize]];
+            let mut prev_node = vec![back_edges.ilog2() as u8];
             prev_node.extend(&node[..k - 1]);
 
             let (prev_edge_info, _, prev_start_end_info) = nodes[&prev_node[..]];
@@ -110,8 +130,8 @@ impl<HM: MapLike> PufferfishIndex<HM> {
 
         let start = Instant::now();
 
-        let mut useq: Vec<u8> = Vec::new();
-        let mut pos: Vec<(Vec<u8>, usize)> = Vec::new();
+        let mut useq: Sequence = Sequence::new();
+        let mut pos: Vec<(Sequence, usize)> = Vec::new();
         let mut bv: Vec<u64> = Vec::new();
         let mut utab: Vec<u8> = Vec::new();
 
@@ -120,7 +140,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
             let mut unipath: Vec<u8> = node.to_vec();
             let mut key: Vec<u8> = node.to_vec();
             let mut useq_idx = useq.len();
-            pos.push((key.clone(), useq_idx));
+            pos.push((Sequence::from_2bc(&key), useq_idx));
             useq_idx += 1;
 
             let (edge_info, colors, _) = &nodes[&key[..]];
@@ -134,7 +154,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
                     // multiple paths
                     break;
                 }
-                let next = b"ACGT"[forward_edges.ilog2() as usize];
+                let next = forward_edges.ilog2() as u8;
                 key.remove(0);
                 key.push(next);
 
@@ -147,10 +167,10 @@ impl<HM: MapLike> PufferfishIndex<HM> {
                 forward_edges = edge_info & 0xf;
 
                 unipath.push(next);
-                pos.push((key.clone(), useq_idx));
+                pos.push((Sequence::from_2bc(&key), useq_idx));
                 useq_idx += 1;
             }
-            useq.extend(unipath);
+            useq.extend_from_2bit_rep(unipath);
 
             // set bit in bv
             let bit_idx = useq.len() - 1;
@@ -184,9 +204,9 @@ impl<HM: MapLike> PufferfishIndex<HM> {
     pub fn query<S: AsRef<[u8]>>(&self, q: S) -> bool {
         // TODO: this should really query consecutive k-mers instead of using windows
         for window in q.as_ref().windows(self.k) {
-            let pos = self.h.get(&window.to_vec());
+            let pos = self.h.get(&Sequence::from_genome(window));
             if let Some(pos) = pos {
-                if self.useq[pos..pos + self.k] != *window {
+                if !self.useq.check_genome(window, pos) {
                     // k-mer not in useq
                     return false;
                 }
@@ -214,7 +234,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn basic_test() {
+    fn basic_hashmap_test() {
+        let sequences = vec!["CTAAGAT", "CGATGCA", "TAAGAGG"];
+        let index = HashMapPufferfishIndex::new(3, sequences);
+
+        assert!(index.query("CTAAGAT"));
+        assert!(index.query("CGATGCA"));
+        assert!(index.query("TAAGAGG"));
+    }
+
+    #[test]
+    fn basic_mphf_test() {
         let sequences = vec!["CTAAGAT", "CGATGCA", "TAAGAGG"];
         let index = DefaultPufferfishIndex::new(3, sequences);
 

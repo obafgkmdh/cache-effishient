@@ -1,6 +1,6 @@
 use crate::{
-    bitvector::{IntVector, BitVector},
-    util::{MapLike, murmur_hash_n},
+    bitvector::{BitVector, IntVector},
+    util::{MapLike, Sequence},
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashSet, default::Default};
@@ -12,9 +12,9 @@ pub struct MPHF {
     values: IntVector,
 }
 
-impl FromIterator<(Vec<u8>, usize)> for MPHF {
-    fn from_iter<T: IntoIterator<Item = (Vec<u8>, usize)>>(iter: T) -> Self {
-        let mut kv: HashSet<(Vec<u8>, usize)> = iter.into_iter().collect();
+impl FromIterator<(Sequence, usize)> for MPHF {
+    fn from_iter<T: IntoIterator<Item = (Sequence, usize)>>(iter: T) -> Self {
+        let mut kv: HashSet<(Sequence, usize)> = iter.into_iter().collect();
 
         let max_value: usize = kv.iter().map(|(_, v)| *v).max().unwrap();
         let n_bits = max_value.bit_width();
@@ -39,7 +39,7 @@ impl FromIterator<(Vec<u8>, usize)> for MPHF {
 
             // find collisions
             for (key, value) in kv.iter() {
-                let hash = murmur_hash_n(key, salt, n_keys);
+                let hash = key.murmur_hash_n(salt, n_keys);
                 let (index, shift) = (hash / 64, hash % 64);
                 let coll_bit = coll[index] >> shift & 1;
                 if coll_bit == 1 {
@@ -74,7 +74,7 @@ impl FromIterator<(Vec<u8>, usize)> for MPHF {
 
             // retain only the keys that collided
             kv.retain(|(key, _)| {
-                let hash = murmur_hash_n(key, salt, n_keys);
+                let hash = key.murmur_hash_n(salt, n_keys);
                 let (index, shift) = (hash / 64, hash % 64);
                 let coll_bit = coll[index] >> shift & 1;
                 coll_bit == 1
@@ -92,12 +92,12 @@ impl FromIterator<(Vec<u8>, usize)> for MPHF {
 }
 
 impl MapLike for MPHF {
-    fn get(&self, key: &Vec<u8>) -> Option<usize> {
+    fn get(&self, key: &Sequence) -> Option<usize> {
         let mut salt = 0;
         let mut bit_offset = 0;
         let mut keys_remaining = self.size;
         loop {
-            let hash = murmur_hash_n(key, salt, keys_remaining);
+            let hash = key.murmur_hash_n(salt, keys_remaining);
             let bv_bit = self.bv[bit_offset + hash];
             if bv_bit {
                 let value_idx = self.bv.rank(bit_offset + hash).unwrap();
@@ -118,8 +118,17 @@ mod tests {
 
     #[test]
     fn mphf_test() {
-        let kv: Vec<(Vec<u8>, usize)> = (0..1000)
-            .map(|i| (u16::to_le_bytes(i as u16).to_vec(), i))
+        let kv: Vec<(Sequence, usize)> = (0..1000)
+            .map(|i| {
+                (
+                    Sequence::from_2bc(
+                        (0..8)
+                            .map(|j| (i >> (2 * j) & 3) as u8)
+                            .collect::<Vec<u8>>(),
+                    ),
+                    i,
+                )
+            })
             .collect();
 
         let mphf = MPHF::from_iter(kv.iter().cloned());

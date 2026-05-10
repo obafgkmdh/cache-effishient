@@ -89,7 +89,8 @@ impl BitVector {
         let n_subchunks = chunk_nbits.div_ceil(subchunk_nbits);
 
         let mut cumulative_ranks = IntVector::new(n_bit_width as u8, n_chunks);
-        let mut cumulative_subranks = IntVector::new(chunk_nbits.bit_width() as u8, n_chunks * n_subchunks);
+        let mut cumulative_subranks =
+            IntVector::new(chunk_nbits.bit_width() as u8, n_chunks * n_subchunks);
 
         let mut bit_idx = 0usize;
 
