@@ -49,38 +49,36 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let start = Instant::now();
 
         // Build De Bruijn graph
-        // Hashmap stores forward/back edges, bitvec of colors, and if node is start/end
-        let mut nodes: HashMap<&[u8], (u8, Vec<u8>, u8)> = HashMap::new();
-        for (color, string) in reference_strings.iter().enumerate() {
-            let (color_idx, color_bit) = (color / 8, 1u8 << (color % 8));
+        let mut starts: HashSet<&[u8]> = HashSet::new();
+        let mut ends: HashSet<&[u8]> = HashSet::new();
 
+        // Hashmap stores forward/back edges
+        let mut nodes: HashMap<&[u8], u8> = HashMap::new();
+        for string in reference_strings.iter() {
             let mut last_node: Option<&[u8]> = None;
             for window in string.windows(k) {
-                // insert node, add color
-                let cur_entry = nodes
-                    .entry(window)
-                    .or_insert_with(|| (0, vec![0; color_bytes], 0));
-                cur_entry.1[color_idx] |= color_bit;
+                // insert node
+                let cur_entry = nodes.entry(window).or_insert(0);
 
                 if let Some(last_node) = last_node {
                     // insert back edge
                     let bit_pattern_prev = 16 << last_node[0];
-                    cur_entry.0 |= bit_pattern_prev;
+                    *cur_entry |= bit_pattern_prev;
 
                     // insert forward edge
                     let next = *window.last().unwrap();
                     let bit_pattern_next = 1 << next;
-                    nodes.get_mut(last_node).unwrap().0 |= bit_pattern_next;
+                    *nodes.get_mut(last_node).unwrap() |= bit_pattern_next;
                 } else {
                     // mark node as start of sequence
-                    cur_entry.2 |= 1;
+                    starts.insert(window);
                 }
                 last_node = Some(window);
             }
 
             if let Some(last_node) = last_node {
                 // mark last node as end of sequence
-                nodes.get_mut(last_node).unwrap().2 |= 2;
+                ends.insert(last_node);
             }
         }
 
@@ -89,11 +87,11 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let start = Instant::now();
 
         // Find junctions (all places where a unipath starts)
-        let mut junctions: HashSet<&[u8]> = HashSet::new();
-        for (node, (edge_info, _, start_end_info)) in &nodes {
-            if start_end_info & 1 == 1 {
-                // sequence starts are junctions
-                junctions.insert(node);
+        // Hashmap will store color information
+        let mut junctions: HashMap<&[u8], Vec<u8>> =
+            HashMap::from_iter(starts.iter().map(|&k| (k, vec![0; color_bytes])));
+        for (node, edge_info) in &nodes {
+            if starts.contains(node) {
                 continue;
             }
 
@@ -101,8 +99,8 @@ impl<HM: MapLike> PufferfishIndex<HM> {
             let one_back_edge = back_edges.is_power_of_two();
 
             if !one_back_edge {
-                // 0 or multiple back edges is a junction
-                junctions.insert(node);
+                // multiple back edges is a junction
+                junctions.insert(node, vec![0; color_bytes]);
                 continue;
             }
 
@@ -110,23 +108,41 @@ impl<HM: MapLike> PufferfishIndex<HM> {
             let mut prev_node = vec![back_edges.ilog2() as u8];
             prev_node.extend(&node[..k - 1]);
 
-            let (prev_edge_info, _, prev_start_end_info) = nodes[&prev_node[..]];
-
-            if prev_start_end_info & 2 == 2 {
+            if ends.contains(&prev_node[..]) {
                 // nodes following sequence ends are junctions
-                junctions.insert(node);
+                junctions.insert(node, vec![0; color_bytes]);
                 continue;
             }
+
+            let prev_edge_info = nodes[&prev_node[..]];
 
             let prev_forward_edges = prev_edge_info & 0xf;
             let one_prev_forward_edge = prev_forward_edges.is_power_of_two();
             if !one_prev_forward_edge {
                 // multiple forward edges on prev node is a junction
-                junctions.insert(node);
+                junctions.insert(node, vec![0; color_bytes]);
             }
         }
 
         trace!("find junctions: {}ms", (Instant::now() - start).as_millis());
+
+        let start = Instant::now();
+
+        for (color, string) in reference_strings.iter().enumerate() {
+            let (color_idx, color_bit) = (color / 8, 1u8 << (color % 8));
+
+            for window in string.windows(k) {
+                // add color
+                junctions.entry(window).and_modify(|info| {
+                    info[color_idx] |= color_bit;
+                });
+            }
+        }
+
+        trace!(
+            "mark junction colors: {}ms",
+            (Instant::now() - start).as_millis()
+        );
 
         let start = Instant::now();
 
@@ -136,14 +152,14 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let mut utab: Vec<u8> = Vec::new();
 
         // Create a unipath at each junction
-        for node in junctions.iter() {
+        for (&node, colors) in junctions.iter() {
             let mut unipath: Vec<u8> = node.to_vec();
             let mut key: Vec<u8> = node.to_vec();
             let mut useq_idx = useq.len();
             pos.push((Sequence::from_2bc(&key), useq_idx));
             useq_idx += 1;
 
-            let (edge_info, colors, _) = &nodes[&key[..]];
+            let edge_info = &nodes[&key[..]];
             let mut forward_edges = edge_info & 0xf;
 
             // create entry in utab
@@ -158,12 +174,12 @@ impl<HM: MapLike> PufferfishIndex<HM> {
                 key.remove(0);
                 key.push(next);
 
-                if junctions.contains(&key[..]) {
+                if junctions.contains_key(&key[..]) {
                     // reached a junction
                     break;
                 }
 
-                let (edge_info, _, _) = &nodes[&key[..]];
+                let edge_info = &nodes[&key[..]];
                 forward_edges = edge_info & 0xf;
 
                 unipath.push(next);
