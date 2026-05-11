@@ -37,42 +37,42 @@ pub fn murmur_hash_n(key: &[u8], salt: u32, n: usize) -> usize {
 // 2-bit encoded sequence
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Sequence {
-    length: usize,
+    bit_offset: u8,
     sequence: Vec<u8>,
 }
 
 impl Sequence {
     pub fn new() -> Self {
         Self {
-            length: 0,
+            bit_offset: 0,
             sequence: vec![],
         }
     }
 
     pub fn len(&self) -> usize {
-        self.length
+        self.sequence.len() * 4 - ((4 - self.bit_offset) % 4) as usize
     }
 
     pub fn extend_from_2bit_rep<S: AsRef<[u8]>>(&mut self, s: S) {
         let s = s.as_ref();
         let length = s.len();
-        let (byte_pos, remainder) = (self.length / 4, self.length % 4);
+        let remainder = self.bit_offset as usize;
         let mut pre = 0;
 
         // update length
-        self.length += length;
+        self.bit_offset = (self.bit_offset + length as u8) % 4;
 
         if remainder != 0 {
             pre = 4 - remainder;
             // complete current byte
             if length <= pre {
-                self.sequence[byte_pos] |= s
+                *self.sequence.last_mut().unwrap() |= s
                     .into_iter()
                     .enumerate()
                     .fold(0, |acc, (i, &c)| acc | (c << (2 * (i + remainder))));
                 return;
             }
-            self.sequence[byte_pos] |= s[..pre]
+            *self.sequence.last_mut().unwrap() |= s[..pre]
                 .into_iter()
                 .enumerate()
                 .fold(0, |acc, (i, &c)| acc | (c << (2 * (i + remainder))));
@@ -94,7 +94,7 @@ impl Sequence {
     pub fn check_genome<S: AsRef<[u8]>>(&self, s: S, pos: usize) -> bool {
         let s = s.as_ref();
         let length = s.len();
-        if pos + length > self.length {
+        if pos + length > self.len() {
             return false;
         }
         let (mut byte_pos, bit_pos) = (pos / 4, pos % 4);
@@ -152,7 +152,6 @@ impl Sequence {
 
     pub fn from_genome<S: AsRef<[u8]>>(s: S) -> Self {
         let s = s.as_ref();
-        let length = s.len();
         let (chunks, remainder) = s.as_chunks::<4>();
         let mut sequence: Vec<u8> = chunks
             .into_iter()
@@ -171,12 +170,11 @@ impl Sequence {
                 as u8;
             sequence.push(b);
         }
-        Self { length, sequence }
+        Self { bit_offset: remainder.len() as u8, sequence }
     }
 
     pub fn from_2bc<S: AsRef<[u8]>>(s: S) -> Self {
         let s = s.as_ref();
-        let length = s.len();
         let (chunks, remainder) = s.as_chunks::<4>();
         let mut sequence: Vec<u8> = chunks
             .into_iter()
@@ -189,7 +187,7 @@ impl Sequence {
                 .fold(0, |acc, (i, &c)| acc | (c << (2 * i))) as u8;
             sequence.push(b);
         }
-        Self { length, sequence }
+        Self { bit_offset: remainder.len() as u8, sequence }
     }
 
     pub fn murmur_hash_n(&self, salt: u32, n: usize) -> usize {
