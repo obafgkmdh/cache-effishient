@@ -54,12 +54,7 @@ pub fn murmur_hash_64(key: &[u8]) -> u64 {
     acc
 }
 
-pub fn murmur_hash_n(key: &[u8], salt: u32, n: usize) -> usize {
-    // If our hash function is good enough, this trick avoids an expensive modulo operation
-    murmur_hash(key, salt) as usize * n >> 32
-}
-
-// 2-bit encoded sequence
+// 2-bit encoded sequence, packed to 4 chars per byte
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub struct Sequence {
     bit_offset: u8,
@@ -78,6 +73,7 @@ impl Sequence {
         self.sequence.len() * 4 - ((4 - self.bit_offset) % 4) as usize
     }
 
+    // Extend sequence with a 2-bit-encoded byte array
     pub fn extend_from_2bit_rep<S: AsRef<[u8]>>(&mut self, s: S) {
         let s = s.as_ref();
         let length = s.len();
@@ -116,6 +112,7 @@ impl Sequence {
         }
     }
 
+    // Check if ACGT-encoded sequence exists at the given position
     pub fn check_genome<S: AsRef<[u8]>>(&self, s: S, pos: usize) -> bool {
         let s = s.as_ref();
         let length = s.len();
@@ -175,6 +172,7 @@ impl Sequence {
         true
     }
 
+    // Create sequence from ACGT-encoded byte array
     pub fn from_genome<S: AsRef<[u8]>>(s: S) -> Self {
         let s = s.as_ref();
         let (chunks, remainder) = s.as_chunks::<4>();
@@ -201,6 +199,7 @@ impl Sequence {
         }
     }
 
+    // Create sequence from 2-bit-encoded byte array
     pub fn from_2bc<S: AsRef<[u8]>>(s: S) -> Self {
         let s = s.as_ref();
         let (chunks, remainder) = s.as_chunks::<4>();
@@ -222,12 +221,13 @@ impl Sequence {
     }
 
     pub fn murmur_hash_n(&self, salt: u32, n: usize) -> usize {
-        // we ignore length since we will only hash sequences of the same length
-        murmur_hash_n(&self.sequence, salt, n)
+        // If our hash function is good enough, this trick avoids an expensive modulo operation
+        // We ignore sequence length since we will only hash sequences of the same length
+        murmur_hash(&self.sequence, salt) as usize * n >> 32
     }
 }
 
-// HyperLogLog sketch
+// HyperLogLog sketch: https://en.wikipedia.org/wiki/HyperLogLog
 pub struct HyperLogLog {
     log_m: u8,
     mask: u64,
@@ -236,6 +236,7 @@ pub struct HyperLogLog {
 }
 
 impl HyperLogLog {
+    // Create new HyperLogLog sketch with 2^log_m counters
     pub fn new(log_m: u8) -> Self {
         let mask: u64 = (1 << log_m) - 1;
         let alpha = match log_m {
@@ -252,6 +253,7 @@ impl HyperLogLog {
         }
     }
 
+    // Insert an item
     pub fn insert<S: AsRef<[u8]>>(&mut self, s: S) {
         // We use DefaultHasher because hash quality matters more than performance here
         let mut hasher = DefaultHasher::new();
@@ -265,9 +267,11 @@ impl HyperLogLog {
         self.counters[j] = max(self.counters[j], rho);
     }
 
+    // Estimate number of distinct items inserted
     pub fn count(&self) -> usize {
         let n_empty = self.counters.iter().filter(|&&c| c == 0).count();
         if n_empty > 0 {
+            // small range correction
             let m = (1u64 << self.log_m) as f64;
             return (m * (m / n_empty as f64).ln()) as usize;
         }
@@ -280,6 +284,13 @@ impl HyperLogLog {
         let harmonic_mean = (1u64 << counter_max) as f64 / denominator as f64;
         let estimate = self.alpha * (1u64 << (2 * self.log_m)) as f64 * harmonic_mean;
         estimate.round() as usize
+    }
+
+    #[allow(dead_code)]
+    // Standard error of count estimate
+    pub fn standard_error(&self) -> f64 {
+        let m = 1u64 << self.log_m;
+        1.04f64 / (m as f64).sqrt()
     }
 }
 
@@ -308,18 +319,29 @@ mod tests {
 
     #[test]
     fn test_hyperloglog() {
-        let mut sketch = HyperLogLog::new(8);
-        let check_counts: Vec<usize> = vec![
+        let mut sketch = HyperLogLog::new(11);
+        let mut check_counts: Vec<usize> = vec![
             100, 500, 1000, 5_000, 10_000, 100_000, 1_000_000, 10_000_000,
         ];
-        for i in 1usize..=10_000_000usize {
+
+        if !cfg!(debug_assertions) {
+            // we can go higher in release mode
+            check_counts.push(100_000_000);
+            check_counts.push(1_000_000_000);
+        }
+
+        for i in 1usize..=*check_counts.iter().max().unwrap() {
             sketch.insert(i.to_le_bytes());
 
             if check_counts.contains(&i) {
                 let count = sketch.count();
-                let error = count.abs_diff(i);
-                assert!(error * 4 < i, "estimated {}, true count was {}", count, i);
-                eprintln!("estimated {}, true count was {}", count, i);
+                let error = count as i64 - i as i64;
+
+                // error should probably be within 3.5 standard deviations
+                let stddev = sketch.standard_error() * i as f64;
+                let z = error as f64 / stddev;
+                eprintln!("estimated {}, true count was {} (z = {})", count, i, z);
+                assert!(z < 3.5_f64);
             }
         }
     }

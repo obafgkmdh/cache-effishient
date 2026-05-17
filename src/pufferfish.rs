@@ -14,13 +14,13 @@ use std::{
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PufferfishIndex<HM: MapLike> {
     k: usize,
+    n_colors: usize,
     h: HM,
     useq: Sequence,
     bv: BitVector,
     utab: Vec<u8>,
 }
 
-// HM can (and should) later be swapped out with a MPHF
 pub type HashMapPufferfishIndex = PufferfishIndex<HashMap<Sequence, usize>>;
 pub type DefaultPufferfishIndex = PufferfishIndex<MPHF>;
 
@@ -47,7 +47,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
 
         let start = Instant::now();
 
-        let mut unique_edges_sketch = HyperLogLog::new(8);
+        let mut unique_edges_sketch = HyperLogLog::new(11);
 
         for string in reference_strings.iter() {
             for window in string.windows(k) {
@@ -324,6 +324,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
 
         Self {
             k,
+            n_colors,
             h,
             useq,
             bv,
