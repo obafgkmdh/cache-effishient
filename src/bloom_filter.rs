@@ -28,7 +28,16 @@ impl BloomFilter {
     pub fn insert_key<S: AsRef<[u8]>>(&mut self, key: S) {
         let h = murmur_hash_64(key.as_ref());
         let (h_high, mut h_low) = ((h >> 32) as u32, h as u32);
-        for i in 1..=self.n_hashes {
+
+        // check first hash
+        let loc = h_low as usize * self.n_bits >> 32;
+        // hot path; only check bounds in debug mode
+        debug_assert!(loc < self.n_bits);
+        let v = unsafe { self.bv.get_unchecked_mut(loc / 8) };
+        *v |= 1 << (loc % 8);
+
+        // check remaining hashes
+        for i in 1..self.n_hashes {
             h_low = murmur_hash_step(h_low, i.wrapping_mul(h_high));
             let loc = h_low as usize * self.n_bits >> 32;
             // hot path; only check bounds in debug mode
@@ -41,7 +50,18 @@ impl BloomFilter {
     pub fn query_key<S: AsRef<[u8]>>(&self, key: S) -> bool {
         let h = murmur_hash_64(key.as_ref());
         let (h_high, mut h_low) = ((h >> 32) as u32, h as u32);
-        (1..=self.n_hashes).all(|i| {
+
+        // check first hash
+        let loc = h_low as usize * self.n_bits >> 32;
+        // hot path; only check bounds in debug mode
+        debug_assert!(loc < self.n_bits);
+        let v = unsafe { *self.bv.get_unchecked(loc / 8) };
+        if (v >> (loc % 8) & 1) == 0 {
+            return false
+        }
+
+        // check remaining hashes
+        (1..self.n_hashes).all(|i| {
             h_low = murmur_hash_step(h_low, i.wrapping_mul(h_high));
             let loc = h_low as usize * self.n_bits >> 32;
             // hot path; only check bounds in debug mode

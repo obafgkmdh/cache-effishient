@@ -15,6 +15,7 @@ impl MapLike for HashMap<Sequence, usize> {
     }
 }
 
+#[inline(always)]
 pub fn index_in_acgt(c: u8) -> usize {
     // Map A, C, G, T to 0, 1, 2, 3
     // The ilog2 compiles into a single `bsr` instruction, which is pretty neat
@@ -55,45 +56,51 @@ pub fn murmur_hash_64(key: &[u8]) -> u64 {
 }
 
 // 2-bit encoded sequence, packed to 4 chars per byte
+// First byte of vector encodes length mod 4
 #[derive(Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
-pub struct Sequence {
-    bit_offset: u8,
-    sequence: Vec<u8>,
-}
+pub struct Sequence(Vec<u8>);
 
 impl Sequence {
     pub fn new() -> Self {
-        Self {
-            bit_offset: 0,
-            sequence: vec![],
-        }
+        Self(vec![0])
+    }
+
+    #[inline(always)]
+    fn get_bit_offset(&self) -> u8 {
+        // first element should always exist
+        debug_assert!(self.0.len() > 0);
+        unsafe { *self.0.get_unchecked(0) }
     }
 
     pub fn len(&self) -> usize {
-        self.sequence.len() * 4 - ((4 - self.bit_offset) % 4) as usize
+        (self.0.len() - 1) * 4 - ((4 - self.get_bit_offset()) % 4) as usize
     }
 
     // Extend sequence with a 2-bit-encoded byte array
     pub fn extend_from_2bit_rep<S: AsRef<[u8]>>(&mut self, s: S) {
         let s = s.as_ref();
         let length = s.len();
-        let remainder = self.bit_offset as usize;
+        let remainder = self.get_bit_offset() as usize;
         let mut pre = 0;
 
         // update length
-        self.bit_offset = (self.bit_offset + length as u8) % 4;
+        self.0[0] = (self.get_bit_offset() + length as u8) % 4;
 
         if remainder != 0 {
             pre = 4 - remainder;
             // complete current byte
+
+            debug_assert!(self.0.len() > 1);
+            let last_byte = unsafe { self.0.last_mut().unwrap_unchecked() };
+
             if length <= pre {
-                *self.sequence.last_mut().unwrap() |= s
+                *last_byte |= s
                     .into_iter()
                     .enumerate()
                     .fold(0, |acc, (i, &c)| acc | (c << (2 * (i + remainder))));
                 return;
             }
-            *self.sequence.last_mut().unwrap() |= s[..pre]
+            *last_byte |= s[..pre]
                 .into_iter()
                 .enumerate()
                 .fold(0, |acc, (i, &c)| acc | (c << (2 * (i + remainder))));
@@ -101,14 +108,14 @@ impl Sequence {
 
         let (chunks, remainder) = s[pre..].as_chunks::<4>();
         for &[a, b, c, d] in chunks {
-            self.sequence.push(a + 4 * b + 16 * c + 64 * d);
+            self.0.push(a + 4 * b + 16 * c + 64 * d);
         }
         if remainder.len() > 0 {
             let b = remainder
                 .into_iter()
                 .enumerate()
                 .fold(0, |acc, (i, &c)| acc | (c << (2 * i))) as u8;
-            self.sequence.push(b);
+            self.0.push(b);
         }
     }
 
@@ -119,12 +126,12 @@ impl Sequence {
         if pos + length > self.len() {
             return false;
         }
-        let (mut byte_pos, bit_pos) = (pos / 4, pos % 4);
+        let (mut byte_pos, bit_pos) = (pos / 4 + 1, pos % 4);
 
         let mut pre = 0;
         if bit_pos != 0 {
             pre = 4 - bit_pos;
-            let cur = self.sequence[byte_pos] >> (bit_pos * 2);
+            let cur = self.0[byte_pos] >> (bit_pos * 2);
             if length <= pre {
                 let mask = (1 << (2 * length)) - 1;
                 let b = s
@@ -152,7 +159,7 @@ impl Sequence {
                 + 4 * index_in_acgt(b)
                 + 16 * index_in_acgt(c)
                 + 64 * index_in_acgt(d)) as u8;
-            if b != self.sequence[byte_pos] {
+            if b != self.0[byte_pos] {
                 return false;
             }
 
@@ -166,7 +173,7 @@ impl Sequence {
                 .enumerate()
                 .fold(0, |acc, (i, &c)| acc | (index_in_acgt(c) << (2 * i)))
                 as u8;
-            return b == self.sequence[byte_pos] & mask;
+            return b == self.0[byte_pos] & mask;
         }
 
         true
@@ -176,14 +183,13 @@ impl Sequence {
     pub fn from_genome<S: AsRef<[u8]>>(s: S) -> Self {
         let s = s.as_ref();
         let (chunks, remainder) = s.as_chunks::<4>();
-        let mut sequence: Vec<u8> = chunks
-            .into_iter()
-            .map(|&[a, b, c, d]| {
+        let mut sequence: Vec<u8> = std::iter::once(remainder.len() as u8)
+            .chain(chunks.into_iter().map(|&[a, b, c, d]| {
                 (index_in_acgt(a)
                     + 4 * index_in_acgt(b)
                     + 16 * index_in_acgt(c)
                     + 64 * index_in_acgt(d)) as u8
-            })
+            }))
             .collect();
         if remainder.len() > 0 {
             let b = remainder
@@ -193,19 +199,19 @@ impl Sequence {
                 as u8;
             sequence.push(b);
         }
-        Self {
-            bit_offset: remainder.len() as u8,
-            sequence,
-        }
+        Self(sequence)
     }
 
     // Create sequence from 2-bit-encoded byte array
     pub fn from_2bc<S: AsRef<[u8]>>(s: S) -> Self {
         let s = s.as_ref();
         let (chunks, remainder) = s.as_chunks::<4>();
-        let mut sequence: Vec<u8> = chunks
-            .into_iter()
-            .map(|&[a, b, c, d]| a + 4 * b + 16 * c + 64 * d)
+        let mut sequence: Vec<u8> = std::iter::once(remainder.len() as u8)
+            .chain(
+                chunks
+                    .into_iter()
+                    .map(|&[a, b, c, d]| a + 4 * b + 16 * c + 64 * d),
+            )
             .collect();
         if remainder.len() > 0 {
             let b = remainder
@@ -214,16 +220,14 @@ impl Sequence {
                 .fold(0, |acc, (i, &c)| acc | (c << (2 * i))) as u8;
             sequence.push(b);
         }
-        Self {
-            bit_offset: remainder.len() as u8,
-            sequence,
-        }
+        Self(sequence)
     }
 
+    #[inline(always)]
     pub fn murmur_hash_n(&self, salt: u32, n: usize) -> usize {
         // If our hash function is good enough, this trick avoids an expensive modulo operation
         // We ignore sequence length since we will only hash sequences of the same length
-        murmur_hash(&self.sequence, salt) as usize * n >> 32
+        murmur_hash(&self.0[1..], salt) as usize * n >> 32
     }
 }
 
