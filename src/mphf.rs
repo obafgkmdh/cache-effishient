@@ -3,7 +3,7 @@ use crate::{
     util::{MapLike, Sequence},
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::HashSet, default::Default};
+use std::{cmp::max, collections::HashSet, default::Default};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MPHF {
@@ -14,9 +14,15 @@ pub struct MPHF {
 
 impl FromIterator<(Sequence, usize)> for MPHF {
     fn from_iter<T: IntoIterator<Item = (Sequence, usize)>>(iter: T) -> Self {
-        let mut kv: HashSet<(Sequence, usize)> = iter.into_iter().collect();
+        let mut max_value = 0;
 
-        let max_value: usize = kv.iter().map(|(_, v)| *v).max().unwrap();
+        let mut kv: HashSet<(Sequence, usize)> = iter
+            .into_iter()
+            .inspect(|&(_, v)| {
+                max_value = max(max_value, v);
+            })
+            .collect();
+
         let n_bits = max_value.bit_width();
 
         let size = kv.len();

@@ -11,7 +11,7 @@ use std::{
 };
 
 #[derive(Parser, Debug)]
-#[command(name = "naive", version)]
+#[command(name = "pufferfish", version)]
 struct Args {
     #[command(subcommand)]
     command: Command,
