@@ -69,7 +69,7 @@ impl DeBruijnGraph {
         println!("k: {}", self.k);
         println!(
             "bloom filter: {} bits, {} hashes",
-            self.bloom_filter.n_bits, self.bloom_filter.n_hashes
+            self.bloom_filter.n_bits, self.bloom_filter.num_hashes()
         );
         println!(
             "critical false positives: {}",
