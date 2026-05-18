@@ -336,42 +336,53 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         }
     }
 
-    pub fn query_kmer<S: AsRef<[u8]>>(&self, kmer: S) -> bool {
+    pub fn query_kmer<S: AsRef<[u8]>>(&self, kmer: S) -> Option<&[u8]> {
         let kmer = kmer.as_ref();
         debug_assert!(kmer.len() == self.k);
         let pos = self.h.get(&Sequence::from_genome(kmer));
         if let Some(pos) = pos {
             if !self.useq.check_genome(kmer, pos) {
                 // k-mer not in useq
-                return false;
+                return None;
             }
-            let rank1 = self.bv.rank(pos);
-            let rank2 = self.bv.rank(pos + self.k - 1);
+            let rank1 = self.bv.rank(pos).unwrap();
+            let rank2 = self.bv.rank(pos + self.k - 1).unwrap();
             if rank1 != rank2 {
                 // crossed useq boundary
-                return false;
+                return None;
             }
-        } else {
-            return false;
+            let color_bytes = self.n_colors.div_ceil(8);
+            return Some(&self.utab[rank1 * color_bytes..rank1 * color_bytes + color_bytes]);
         }
-        true
+        None
     }
 
     pub fn query<S: AsRef<[u8]>>(&self, q: S) -> bool {
         let q = q.as_ref();
+        let color_bytes = self.n_colors.div_ceil(8);
+        let mut colors: Vec<u8> = vec![0xff; color_bytes];
         let mut chunks_iterator = q.chunks_exact(self.k);
         while let Some(window) = chunks_iterator.next() {
-            if !self.query_kmer(window) {
+            if let Some(kmer_colors) = self.query_kmer(window) {
+                for i in 0..color_bytes {
+                    colors[i] &= kmer_colors[i];
+                }
+            } else {
                 return false;
             }
         }
         if chunks_iterator.remainder().len() > 0 {
             // check last k-mer
-            if !self.query_kmer(&q[q.len() - self.k..]) {
+            if let Some(kmer_colors) = self.query_kmer(&q[q.len() - self.k..]) {
+                for i in 0..color_bytes {
+                    colors[i] &= kmer_colors[i];
+                }
+            } else {
                 return false;
             }
         }
-        true
+        // is there a color that describes every k-mer?
+        colors.into_iter().any(|c| c > 0)
     }
 
     pub fn print_stats(&self) {

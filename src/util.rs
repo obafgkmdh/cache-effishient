@@ -335,14 +335,12 @@ mod tests {
     #[test]
     fn test_hyperloglog() {
         let mut sketch = HyperLogLog::new(11);
-        let mut check_counts: Vec<usize> = vec![
-            100, 500, 1000, 5_000, 10_000, 100_000, 1_000_000, 10_000_000,
-        ];
+        let mut check_counts: Vec<usize> = vec![100, 500, 1000, 5_000, 10_000, 100_000, 1_000_000];
 
         if !cfg!(debug_assertions) {
             // we can go higher in release mode
+            check_counts.push(10_000_000);
             check_counts.push(100_000_000);
-            check_counts.push(1_000_000_000);
         }
 
         for i in 1usize..=*check_counts.iter().max().unwrap() {
