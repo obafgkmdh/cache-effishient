@@ -35,6 +35,8 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         // Hashmap will store color information
         let mut junctions: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
 
+        let mut ends: HashSet<&[u8]> = HashSet::with_capacity(reference_strings.len());
+
         trace!("building pufferfish index (k = {})", k);
         let start = Instant::now();
 
@@ -57,49 +59,56 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let start = Instant::now();
 
         let mut unique_nodes_sketch = HyperLogLog::new(11);
-        let mut unique_edges_sketch = HyperLogLog::new(11);
 
         for string in reference_strings.iter() {
+            // mark starts as junctions
+            junctions.insert(string[..k].to_vec(), vec![0; color_bytes]);
+
             unique_nodes_sketch.insert(&string[..k]);
             for window in string.windows(k + 1) {
                 // insert edge
-                unique_edges_sketch.insert(&window);
                 unique_nodes_sketch.insert(&window[1..]);
             }
+
+            // mark ends
+            ends.insert(&string[string.len() - k..]);
         }
 
-        let unique_edges_bound = unique_edges_sketch.upper_bound(2.0);
         let unique_nodes_bound = unique_nodes_sketch.upper_bound(2.0);
 
         trace!(
             "approx. count unique edges: {}ms",
             (Instant::now() - start).as_millis()
         );
-        debug!(
-            "approx. bounds on unique edges: {}, unique nodes: {}",
-            unique_edges_bound, unique_nodes_bound
-        );
+        debug!("approx. bound on unique nodes: {}", unique_nodes_bound);
 
         let start = Instant::now();
 
         // Build De Bruijn graph
-        let mut ends: HashSet<&[u8]> = HashSet::with_capacity(reference_strings.len());
 
-        let mut unique_hashes: HashSet<u64> = HashSet::with_capacity(unique_edges_bound);
-        for string in reference_strings.iter() {
-            // mark starts as junctions
-            junctions.insert(string[..k].to_vec(), vec![0; color_bytes]);
-
-            // mark ends
-            ends.insert(&string[string.len() - k..]);
-
-            for window in string.windows(k + 1) {
-                // insert edge
-                unique_hashes.insert(murmur_hash_64(window));
-            }
-        }
+        let unique_hashes = reference_strings
+            .par_iter()
+            .map(|string| {
+                let mut unique_hashes: HashSet<u64> = HashSet::new();
+                for window in string.windows(k + 1) {
+                    // insert edge
+                    unique_hashes.insert(murmur_hash_64(window));
+                }
+                unique_hashes
+            })
+            .reduce(HashSet::new, |mut a, b| {
+                a.extend(b);
+                a
+            });
 
         let unique_hashes: Vec<u64> = unique_hashes.into_iter().collect();
+
+        trace!(
+            "get unique hashes: {}ms",
+            (Instant::now() - start).as_millis()
+        );
+
+        let start = Instant::now();
 
         let edges_filter = BinaryFuse8::try_from(&unique_hashes).unwrap();
 
