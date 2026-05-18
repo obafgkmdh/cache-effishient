@@ -2,11 +2,11 @@
 
 use clap::{Parser, Subcommand};
 use env_logger;
+use log::debug;
 use lib::fasta::{FastaReader, ParseError, Record};
 use std::path::Path;
 use std::{collections::BTreeSet, fs::File, io::Write};
 
-use rand::Rng;
 use rand::distr::{Distribution, slice::Choose};
 use rand::prelude::*;
 
@@ -69,19 +69,6 @@ enum Command {
     },
 }
 
-struct Alphabet;
-
-impl Distribution<char> for Alphabet {
-    fn sample<R: Rng + ?Sized>(&self, rng: &mut R) -> char {
-        *b"ATCG".choose(rng).unwrap() as char
-    }
-}
-
-fn random_string(n: usize) -> String {
-    let mut rng = rand::rng();
-    (0..n).map(|_| rng.sample(Alphabet)).collect()
-}
-
 fn main() {
     env_logger::init();
 
@@ -95,6 +82,8 @@ fn main() {
             num,
             out_file,
         } => {
+            assert!(min <= max, "invalid bounds ({}, {})", min, max);
+            assert!(num > 0, "need num > 0 (got {})", num);
             let mut out_file = File::create(out_file).expect("Coud not create output file");
             let alphabet = ['A', 'C', 'T', 'G'];
             let dist = Choose::new(&alphabet).unwrap();
@@ -115,6 +104,9 @@ fn main() {
             perfile_min,
             out_file,
         } => {
+            assert!(min <= max, "invalid bounds ({}, {})", min, max);
+            assert!(num > 0, "need num > 0 (got {})", num);
+
             let n_files = genome_files.len();
             assert!(
                 n_files * perfile_min <= num,
@@ -140,7 +132,9 @@ fn main() {
             }
             pick_from_file.push(perfile_min + n_slots - last);
 
-            for (file_path, mut pick_from_file) in
+            debug!("count from each file: {:?}", pick_from_file);
+
+            for (file_path, mut n_samples) in
                 genome_files.into_iter().zip(pick_from_file.into_iter())
             {
                 let file = File::open(&file_path).expect("File not found");
@@ -156,21 +150,26 @@ fn main() {
                     })
                     .collect();
 
-                while pick_from_file != 0 {
+                while n_samples > 0 {
                     let Record {
                         identifier,
                         sequence,
                     } = records.choose(&mut rng).unwrap();
                     let sample_size = rng.random_range(min..=max);
 
-                    if sample_size <= sequence.len() {
-                        pick_from_file -= 1;
-
-                        let start = rng.random_range(0..=(sequence.len() - sample_size));
-                        let sample = &sequence[start..(start + sample_size)];
-                        write!(out_file, ">file: {file_name:?} size:{sample_size} record: {identifier}\n{sample}\n")
-                            .expect("output write failed");
+                    if sample_size > sequence.len() {
+                        continue;
                     }
+
+                    let start = rng.random_range(0..=(sequence.len() - sample_size));
+                    let sample = &sequence[start..(start + sample_size)];
+                    write!(
+                        out_file,
+                        ">file: {file_name:?} size:{sample_size} record: {identifier}\n{sample}\n"
+                    )
+                    .expect("output write failed");
+
+                    n_samples -= 1;
                 }
             }
         }
@@ -181,11 +180,15 @@ fn main() {
             num,
             out_file,
         } => {
+            assert!(min <= max, "invalid bounds ({}, {})", min, max);
+            assert!(num > 0, "need num > 0 (got {})", num);
+            let mut out_file = File::create(out_file).expect("Coud not create output file");
+
             let mut files: Vec<File> = Vec::new();
 
             for file_name in gene_files {
                 let file = File::open(file_name).expect("File not found");
-                println!("{:?}", file);
+                eprintln!("{:?}", file);
                 files.push(file);
             }
         }
