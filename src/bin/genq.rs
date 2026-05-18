@@ -2,16 +2,9 @@
 
 use clap::{Parser, Subcommand};
 use env_logger;
-use lib::{
-    fasta::{FastaReader, ParseError, Record},
-    pufferfish::DefaultPufferfishIndex,
-};
-use postcard::{from_bytes, to_stdvec};
+use lib::fasta::{FastaReader, ParseError, Record};
 use std::path::Path;
-use std::{
-    fs::File,
-    io::{Read, Write},
-};
+use std::{collections::BTreeSet, fs::File, io::Write};
 
 use rand::Rng;
 use rand::distr::{Distribution, slice::Choose};
@@ -122,26 +115,39 @@ fn main() {
             perfile_min,
             out_file,
         } => {
+            let n_files = genome_files.len();
             assert!(
-                genome_files.len() * perfile_min <= num,
+                n_files * perfile_min <= num,
                 "Cannot sample from {} files with given minimum {perfile_min} and number requested {num}!",
-                genome_files.len()
+                n_files
             );
 
             let mut out_file = File::create(out_file).expect("Coud not create output file");
-            let mut genome_files = genome_files.clone();
-            genome_files.shuffle(&mut rng);
+            let remaining = num - n_files * perfile_min;
 
-            let mut remaining = num - genome_files.len() * perfile_min;
-            for file_path in genome_files {
+            // determine allocation of remaining samples to each file
+            // we do this by inserting n_files - 1 "dividers" among the remaining samples
+            let mut random_positions: BTreeSet<usize> = BTreeSet::new();
+            let n_slots = remaining + n_files - 1;
+            while random_positions.len() < n_files - 1 {
+                random_positions.insert(rng.random_range(0..n_slots));
+            }
+            let mut pick_from_file: Vec<usize> = Vec::with_capacity(n_files);
+            let mut last = 0;
+            for position in random_positions {
+                pick_from_file.push(perfile_min + position - last);
+                last = position + 1;
+            }
+            pick_from_file.push(perfile_min + n_slots - last);
+
+            for (file_path, mut pick_from_file) in
+                genome_files.into_iter().zip(pick_from_file.into_iter())
+            {
                 let file = File::open(&file_path).expect("File not found");
                 let file_name = Path::new(&file_path).file_name().unwrap();
-                let additional = rng.random_range(0..=remaining);
-                remaining -= additional;
-                let mut pick_from_file = perfile_min + additional;
 
                 let mut reader = FastaReader::new(file);
-                let mut records: Vec<Record> = reader
+                let records: Vec<Record> = reader
                     .records()
                     .map(|record| match record {
                         Ok(r) => r,
@@ -155,7 +161,7 @@ fn main() {
                         identifier,
                         sequence,
                     } = records.choose(&mut rng).unwrap();
-                    let mut sample_size = rng.random_range(min..=max);
+                    let sample_size = rng.random_range(min..=max);
 
                     if sample_size <= sequence.len() {
                         pick_from_file -= 1;
