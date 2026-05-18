@@ -1,3 +1,5 @@
+use rayon::prelude::*;
+
 use crate::{
     bitvector::BitVector,
     mphf::MPHF,
@@ -29,6 +31,9 @@ impl<HM: MapLike> PufferfishIndex<HM> {
     pub fn new<S: Into<String>, T: AsRef<[u8]>>(k: usize, reference_strings: Vec<(S, T)>) -> Self {
         let n_colors = reference_strings.len();
         let color_bytes = n_colors.div_ceil(8);
+
+        // Hashmap will store color information
+        let mut junctions: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
 
         trace!("building pufferfish index (k = {})", k);
         let start = Instant::now();
@@ -82,6 +87,9 @@ impl<HM: MapLike> PufferfishIndex<HM> {
 
         let mut unique_hashes: HashSet<u64> = HashSet::with_capacity(unique_edges_bound);
         for string in reference_strings.iter() {
+            // mark starts as junctions
+            junctions.insert(string[..k].to_vec(), vec![0; color_bytes]);
+
             // mark ends
             ends.insert(&string[string.len() - k..]);
 
@@ -101,57 +109,72 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         );
 
         // Find junctions (all places where a unipath starts)
-        // Hashmap will store color information
-        let mut junctions: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
-
-        // false positive forward edges
-        let mut critical_false_positives: HashSet<Vec<u8>> = HashSet::new();
-
-        let mut maybe_branch: HashSet<&[u8]> = HashSet::new();
-
-        let mut maybe_multiple_back_edges: HashSet<Vec<u8>> = HashSet::new();
 
         let start = Instant::now();
 
-        for string in reference_strings.iter() {
-            // we don't check backwards edges from start, since we already know starts are
-            // junctions
-            junctions.insert(string[..k].to_vec(), vec![0; color_bytes]);
+        let (
+            // false positive forward edges
+            mut critical_false_positives,
+            mut maybe_branch,
+            mut maybe_multiple_back_edges,
+        ): (HashSet<Vec<u8>>, HashSet<&[u8]>, HashSet<Vec<u8>>) = reference_strings
+            .par_iter()
+            .map(|string| {
+                let mut critical_false_positives: HashSet<Vec<u8>> = HashSet::new();
+                let mut maybe_branch: HashSet<&[u8]> = HashSet::new();
+                let mut maybe_multiple_back_edges: HashSet<Vec<u8>> = HashSet::new();
 
-            for window in string.windows(k + 1) {
-                // check other forward edges
-                let mut key: Vec<u8> = window.to_vec();
-                for c in [1, 2, 3] {
-                    key[k] = window[k] ^ c;
+                // we don't check backwards edges from start, since we already know starts are
+                // junctions
+                for window in string.windows(k + 1) {
+                    // check other forward edges
+                    let mut key: Vec<u8> = window.to_vec();
+                    for c in [1, 2, 3] {
+                        key[k] = window[k] ^ c;
+                        if edges_filter.contains(&murmur_hash_64(&key)) {
+                            critical_false_positives.insert(key.clone());
+                            maybe_branch.insert(&window[..k]);
+                        }
+                    }
+
+                    // reset key
+                    key[k] = window[k];
+
+                    // check other backwards edges
+                    for c in [1, 2, 3] {
+                        key[0] = window[0] ^ c;
+                        if edges_filter.contains(&murmur_hash_64(&key)) {
+                            maybe_multiple_back_edges.insert(key.clone());
+                        }
+                    }
+                }
+
+                // check forward edges from end
+                let mut key: Vec<u8> = string[string.len() - k..].to_vec();
+                key.push(0);
+
+                for c in [0, 1, 2, 3] {
+                    key[k] = c;
                     if edges_filter.contains(&murmur_hash_64(&key)) {
                         critical_false_positives.insert(key.clone());
-                        maybe_branch.insert(&window[..k]);
                     }
                 }
 
-                // reset key
-                key[k] = window[k];
-
-                // check other backwards edges
-                for c in [1, 2, 3] {
-                    key[0] = window[0] ^ c;
-                    if edges_filter.contains(&murmur_hash_64(&key)) {
-                        maybe_multiple_back_edges.insert(key.clone());
-                    }
-                }
-            }
-
-            // check forward edges from end
-            let mut key: Vec<u8> = string[string.len() - k..].to_vec();
-            key.push(0);
-
-            for c in [0, 1, 2, 3] {
-                key[k] = c;
-                if edges_filter.contains(&murmur_hash_64(&key)) {
-                    critical_false_positives.insert(key.clone());
-                }
-            }
-        }
+                (
+                    critical_false_positives,
+                    maybe_branch,
+                    maybe_multiple_back_edges,
+                )
+            })
+            .reduce(
+                || (HashSet::new(), HashSet::new(), HashSet::new()),
+                |(mut a1, mut a2, mut a3), (b1, b2, b3)| {
+                    a1.extend(b1);
+                    a2.extend(b2);
+                    a3.extend(b3);
+                    (a1, a2, a3)
+                },
+            );
 
         trace!(
             "find cfp candidates: {}ms",
