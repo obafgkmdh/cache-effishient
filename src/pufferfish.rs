@@ -336,22 +336,38 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         }
     }
 
+    pub fn query_kmer<S: AsRef<[u8]>>(&self, kmer: S) -> bool {
+        let kmer = kmer.as_ref();
+        debug_assert!(kmer.len() == self.k);
+        let pos = self.h.get(&Sequence::from_genome(kmer));
+        if let Some(pos) = pos {
+            if !self.useq.check_genome(kmer, pos) {
+                // k-mer not in useq
+                return false;
+            }
+            let rank1 = self.bv.rank(pos);
+            let rank2 = self.bv.rank(pos + self.k - 1);
+            if rank1 != rank2 {
+                // crossed useq boundary
+                return false;
+            }
+        } else {
+            return false;
+        }
+        true
+    }
+
     pub fn query<S: AsRef<[u8]>>(&self, q: S) -> bool {
-        // TODO: this should really query consecutive k-mers instead of using windows
-        for window in q.as_ref().windows(self.k) {
-            let pos = self.h.get(&Sequence::from_genome(window));
-            if let Some(pos) = pos {
-                if !self.useq.check_genome(window, pos) {
-                    // k-mer not in useq
-                    return false;
-                }
-                let rank1 = self.bv.rank(pos);
-                let rank2 = self.bv.rank(pos + self.k - 1);
-                if rank1 != rank2 {
-                    // crossed useq boundary
-                    return false;
-                }
-            } else {
+        let q = q.as_ref();
+        let mut chunks_iterator = q.chunks_exact(self.k);
+        while let Some(window) = chunks_iterator.next() {
+            if !self.query_kmer(window) {
+                return false;
+            }
+        }
+        if chunks_iterator.remainder().len() > 0 {
+            // check last k-mer
+            if !self.query_kmer(&q[q.len() - self.k..]) {
                 return false;
             }
         }
