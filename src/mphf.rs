@@ -3,7 +3,7 @@ use crate::{
     util::{MapLike, Sequence},
 };
 use serde::{Deserialize, Serialize};
-use std::{cmp::max, collections::HashSet, default::Default};
+use std::{collections::HashMap, default::Default};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct MPHF {
@@ -13,14 +13,10 @@ pub struct MPHF {
 }
 
 impl MapLike for MPHF {
-    fn from_hashset(h: HashSet<(Sequence, usize)>) -> Self {
-        let mut max_value = 0;
+    fn from_hashmap(h: HashMap<Sequence, usize>, max_hint: usize) -> Self {
+        let max_value = max_hint;
 
-        let mut kv: HashSet<(Sequence, usize)> = h;
-
-        for (_k, v) in kv.iter() {
-            max_value = max(max_value, *v);
-        }
+        let mut kv: HashMap<Sequence, usize> = h;
 
         let n_bits = max_value.bit_width();
 
@@ -78,7 +74,7 @@ impl MapLike for MPHF {
             n_processed = value_idx;
 
             // retain only the keys that collided
-            kv.retain(|(key, _)| {
+            kv.retain(|key, _| {
                 let hash = key.murmur_hash_n(salt, n_keys);
                 let (index, shift) = (hash / 64, hash % 64);
                 let coll_bit = coll[index] >> shift & 1;
@@ -121,7 +117,7 @@ mod tests {
 
     #[test]
     fn mphf_test() {
-        let kv: HashSet<(Sequence, usize)> = (0..1000)
+        let kv: HashMap<Sequence, usize> = (0..1000)
             .map(|i| {
                 (
                     Sequence::from_2bc(
@@ -134,7 +130,7 @@ mod tests {
             })
             .collect();
 
-        let mphf = MPHF::from_hashset(kv.clone());
+        let mphf = MPHF::from_hashmap(kv.clone(), 1000);
 
         for (k, v) in kv.into_iter() {
             assert_eq!(mphf.get(&k), Some(v));

@@ -1,7 +1,8 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 use env_logger;
 use lib::{
     fasta::{FastaReader, ParseError, Record},
+    pufferfish,
     pufferfish::DefaultPufferfishIndex,
 };
 use postcard::{from_bytes, to_stdvec};
@@ -18,6 +19,13 @@ struct Args {
     command: Command,
 }
 
+#[derive(ValueEnum, Clone, Debug, Default)]
+pub enum Strategy {
+    #[default]
+    Default,
+    Better,
+}
+
 #[derive(Debug, Subcommand)]
 enum Command {
     Index {
@@ -29,6 +37,9 @@ enum Command {
 
         #[arg(long, short = 'o')]
         out_file: String,
+
+        #[arg(value_enum, default_value_t)]
+        strategy: Strategy,
     },
     Query {
         #[arg(long, short = 'i')]
@@ -52,8 +63,18 @@ fn main() -> io::Result<()> {
     let args = Args::parse();
 
     match &args.command {
-        Command::Index { files, k, out_file } => {
+        Command::Index {
+            files,
+            k,
+            out_file,
+            strategy,
+        } => {
             let mut out_file = File::create(out_file).expect("Coud not create output file");
+
+            let _strategy = match strategy {
+                Strategy::Default => pufferfish::Strategy::Default,
+                Strategy::Better => pufferfish::Strategy::Better,
+            };
 
             let records: Vec<(String, String)> = files
                 .into_iter()

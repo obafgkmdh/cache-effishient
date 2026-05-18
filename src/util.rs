@@ -1,18 +1,19 @@
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::max,
-    collections::{HashMap, HashSet},
+    collections::HashMap,
     hash::{DefaultHasher, Hasher},
 };
 
 pub trait MapLike {
-    fn from_hashset(h: HashSet<(Sequence, usize)>) -> Self;
+    fn from_hashmap(h: HashMap<Sequence, usize>, max_hint: usize) -> Self;
     fn get(&self, key: &Sequence) -> Option<usize>;
 }
 
 impl MapLike for HashMap<Sequence, usize> {
-    fn from_hashset(h: HashSet<(Sequence, usize)>) -> Self {
-        HashMap::from_iter(h)
+    fn from_hashmap(h: HashMap<Sequence, usize>, max_hint: usize) -> Self {
+        let _ = max_hint;
+        h
     }
 
     fn get(&self, key: &Sequence) -> Option<usize> {

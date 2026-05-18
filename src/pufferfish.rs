@@ -13,6 +13,13 @@ use std::{
 };
 use xorf::{BinaryFuse8, Filter};
 
+#[derive(Clone, Debug, Default)]
+pub enum Strategy {
+    #[default]
+    Default,
+    Better,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PufferfishIndex<HM: MapLike> {
     k: usize,
@@ -319,7 +326,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let n_unique_nodes = useq_len - junctions.len() * (k - 1);
 
         let mut useq: Sequence = Sequence::with_capacity(useq_len);
-        let mut pos: HashSet<(Sequence, usize)> = HashSet::with_capacity(n_unique_nodes);
+        let mut pos: HashMap<Sequence, usize> = HashMap::with_capacity(n_unique_nodes);
         let mut bv: Vec<u64> = vec![0; useq_len.div_ceil(64)];
         let mut utab: Vec<u8> = Vec::with_capacity(junctions.len() * color_bytes);
 
@@ -330,7 +337,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
             // update pos
             let mut useq_idx = useq.len();
             for window in unipath.windows(k) {
-                pos.insert((Sequence::from_2bc(window), useq_idx));
+                pos.insert(Sequence::from_2bc(window), useq_idx);
                 useq_idx += 1;
             }
 
@@ -342,11 +349,14 @@ impl<HM: MapLike> PufferfishIndex<HM> {
             bv[bit_idx / 64] |= 1 << (bit_idx % 64);
         }
 
-        trace!("assemble pufferfish components: {}ms", (Instant::now() - start).as_millis());
+        trace!(
+            "assemble pufferfish components: {}ms",
+            (Instant::now() - start).as_millis()
+        );
 
         let start = Instant::now();
 
-        let h: HM = HM::from_hashset(pos);
+        let h: HM = HM::from_hashmap(pos, useq_len - k);
 
         trace!("create map: {}ms", (Instant::now() - start).as_millis());
 
