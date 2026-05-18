@@ -71,7 +71,7 @@ fn main() -> io::Result<()> {
         } => {
             let mut out_file = File::create(out_file).expect("Coud not create output file");
 
-            let _strategy = match strategy {
+            let strategy = match strategy {
                 Strategy::Default => pufferfish::Strategy::Default,
                 Strategy::Better => pufferfish::Strategy::Better,
             };
@@ -96,7 +96,7 @@ fn main() -> io::Result<()> {
                 .flatten()
                 .collect();
 
-            let index = DefaultPufferfishIndex::new(*k, records);
+            let index = DefaultPufferfishIndex::new(*k, records, strategy);
 
             let bytes: Vec<u8> = to_stdvec(&index).unwrap();
             out_file.write_all(&bytes).expect("Failed to write bytes");

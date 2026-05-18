@@ -35,7 +35,11 @@ pub type HashMapPufferfishIndex = PufferfishIndex<HashMap<Sequence, usize>>;
 pub type DefaultPufferfishIndex = PufferfishIndex<MPHF>;
 
 impl<HM: MapLike> PufferfishIndex<HM> {
-    pub fn new<S: Into<String>, T: AsRef<[u8]>>(k: usize, reference_strings: Vec<(S, T)>) -> Self {
+    pub fn new<S: Into<String>, T: AsRef<[u8]>>(
+        k: usize,
+        reference_strings: Vec<(S, T)>,
+        strategy: Strategy,
+    ) -> Self {
         let n_colors = reference_strings.len();
         let color_bytes = n_colors.div_ceil(8);
 
@@ -319,9 +323,16 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         );
         debug!("useq size: {}", useq_len);
 
-        let start = Instant::now();
+        match strategy {
+            Strategy::Default => {},
+            Strategy::Better => {
+                let start = Instant::now();
 
-        // do some sorting here
+                trace!("sort unitigs: {}ms", (Instant::now() - start).as_millis());
+            }
+        }
+
+        let start = Instant::now();
 
         let n_unique_nodes = useq_len - junctions.len() * (k - 1);
 
@@ -386,15 +397,14 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let kmer = kmer.as_ref();
         debug_assert!(kmer.len() == self.k);
 
-        if let Some((prev_pos, prev_rank)) = hint {
-            let pos_start = prev_pos + self.k;
+        if let Some((pos_hint, rank_hint)) = hint {
             // does this k-mer appear right after the previous one?
-            if self.useq.check_genome(kmer, pos_start) {
-                let pos_end = pos_start + self.k - 1;
+            if self.useq.check_genome(kmer, pos_hint) {
+                let pos_end = pos_hint + self.k - 1;
                 let rank2 = self.bv.rank(pos_end).unwrap();
                 // is this k-mer in the same unitig as the previous one?
-                if rank2 == prev_rank {
-                    return Some((pos_start, prev_rank));
+                if rank2 == rank_hint {
+                    return Some((pos_hint, rank_hint));
                 }
             }
         }
@@ -428,13 +438,17 @@ impl<HM: MapLike> PufferfishIndex<HM> {
                 for i in 0..color_bytes {
                     colors[i] &= self.utab[utab_offset + i];
                 }
-                hint = Some((pos, rank));
+                hint = Some((pos + self.k, rank));
             } else {
                 return vec![];
             }
         }
-        if chunks_iterator.remainder().len() > 0 {
+        let remainder = chunks_iterator.remainder().len();
+        if remainder > 0 {
             // check last k-mer
+            if let Some((pos, rank)) = hint {
+                hint = Some((pos + remainder - self.k, rank))
+            }
             if let Some((_pos, rank)) = self.query_kmer(&q[q.len() - self.k..], hint) {
                 let utab_offset = rank * color_bytes;
                 for i in 0..color_bytes {
@@ -469,7 +483,7 @@ mod tests {
     #[test]
     fn basic_hashmap_test() {
         let sequences = vec![("a", "CTAAGAT"), ("b", "CGATGCA"), ("c", "TAAGAGG")];
-        let index = HashMapPufferfishIndex::new(3, sequences);
+        let index = HashMapPufferfishIndex::new(3, sequences, Strategy::Better);
 
         assert!(index.query("CTAAGAT").contains(&"a"));
         assert!(index.query("CGATGCA").contains(&"b"));
@@ -479,7 +493,7 @@ mod tests {
     #[test]
     fn basic_mphf_test() {
         let sequences = vec![("a", "CTAAGAT"), ("b", "CGATGCA"), ("c", "TAAGAGG")];
-        let index = DefaultPufferfishIndex::new(3, sequences);
+        let index = DefaultPufferfishIndex::new(3, sequences, Strategy::Better);
 
         assert!(index.query("CTAAGAT").contains(&"a"));
         assert!(index.query("CGATGCA").contains(&"b"));
