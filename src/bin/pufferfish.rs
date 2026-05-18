@@ -50,6 +50,9 @@ enum Command {
 
         #[arg(long, short = 'o', default_value = "/dev/stdout")]
         out_file: String,
+
+        #[arg(long, short = 'H', default_value_t = 1)]
+        unitig_hint_level: u8,
     },
     Inspect {
         #[arg(long, short = 'i')]
@@ -62,7 +65,7 @@ fn main() -> io::Result<()> {
 
     let args = Args::parse();
 
-    match &args.command {
+    match args.command {
         Command::Index {
             files,
             k,
@@ -96,7 +99,7 @@ fn main() -> io::Result<()> {
                 .flatten()
                 .collect();
 
-            let index = DefaultPufferfishIndex::new(*k, records, strategy);
+            let index = DefaultPufferfishIndex::new(k, records, strategy);
 
             let bytes: Vec<u8> = to_stdvec(&index).unwrap();
             out_file.write_all(&bytes).expect("Failed to write bytes");
@@ -105,6 +108,7 @@ fn main() -> io::Result<()> {
             index,
             query_file,
             out_file,
+            unitig_hint_level: same_unitig_hint,
         } => {
             let mut index_file = File::open(index).expect("File not found");
             let query_file = File::open(query_file).expect("File not found");
@@ -122,7 +126,11 @@ fn main() -> io::Result<()> {
                     sequence,
                 } = record.expect("failed to read record");
                 write!(out_file, "{identifier}\n")?;
-                let found_colors = index.query(sequence);
+                let found_colors = if same_unitig_hint == 1 {
+                    index.query::<true, _>(sequence);
+                } else {
+                    index.query::<false, _>(sequence);
+                };
                 write!(out_file, "found in: {found_colors:?}\n")?;
             }
         }
