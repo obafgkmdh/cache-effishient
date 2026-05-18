@@ -336,9 +336,28 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         }
     }
 
-    pub fn query_kmer<S: AsRef<[u8]>>(&self, kmer: S) -> Option<&[u8]> {
+    // query a single k-mer, return which unitig it's in
+    pub fn query_kmer<S: AsRef<[u8]>>(
+        &self,
+        kmer: S,
+        hint: Option<(usize, usize)>,
+    ) -> Option<(usize, usize)> {
         let kmer = kmer.as_ref();
         debug_assert!(kmer.len() == self.k);
+
+        if let Some((prev_pos, prev_rank)) = hint {
+            let pos_start = prev_pos + self.k;
+            // does this k-mer appear right after the previous one?
+            if self.useq.check_genome(kmer, pos_start) {
+                let pos_end = pos_start + self.k - 1;
+                let rank2 = self.bv.rank(pos_end).unwrap();
+                // is this k-mer in the same unitig as the previous one?
+                if rank2 == prev_rank {
+                    return Some((pos_start, prev_rank));
+                }
+            }
+        }
+
         let pos = self.h.get(&Sequence::from_genome(kmer));
         if let Some(pos) = pos {
             if !self.useq.check_genome(kmer, pos) {
@@ -351,8 +370,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
                 // crossed useq boundary
                 return None;
             }
-            let color_bytes = self.n_colors.div_ceil(8);
-            return Some(&self.utab[rank1 * color_bytes..rank1 * color_bytes + color_bytes]);
+            return Some((pos, rank1));
         }
         None
     }
@@ -362,20 +380,24 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let color_bytes = self.n_colors.div_ceil(8);
         let mut colors: Vec<u8> = vec![0xff; color_bytes];
         let mut chunks_iterator = q.chunks_exact(self.k);
+        let mut hint: Option<(usize, usize)> = None;
         while let Some(window) = chunks_iterator.next() {
-            if let Some(kmer_colors) = self.query_kmer(window) {
+            if let Some((pos, rank)) = self.query_kmer(window, hint) {
+                let utab_offset = rank * color_bytes;
                 for i in 0..color_bytes {
-                    colors[i] &= kmer_colors[i];
+                    colors[i] &= self.utab[utab_offset + i];
                 }
+                hint = Some((pos, rank));
             } else {
                 return false;
             }
         }
         if chunks_iterator.remainder().len() > 0 {
             // check last k-mer
-            if let Some(kmer_colors) = self.query_kmer(&q[q.len() - self.k..]) {
+            if let Some((_pos, rank)) = self.query_kmer(&q[q.len() - self.k..], hint) {
+                let utab_offset = rank * color_bytes;
                 for i in 0..color_bytes {
-                    colors[i] &= kmer_colors[i];
+                    colors[i] &= self.utab[utab_offset + i];
                 }
             } else {
                 return false;
