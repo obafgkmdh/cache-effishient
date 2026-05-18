@@ -7,6 +7,7 @@ use lib::{
     pufferfish::DefaultPufferfishIndex,
 };
 use postcard::{from_bytes, to_stdvec};
+use std::path::Path;
 use std::{
     fs::File,
     io::{Read, Write},
@@ -50,6 +51,9 @@ enum Command {
 
         #[arg(long, short = 'n')]
         num: usize,
+
+        #[arg(long, short = 'p')]
+        perfile_min: usize,
 
         #[arg(long, short = 'o')]
         out_file: String,
@@ -115,14 +119,53 @@ fn main() {
             min,
             max,
             num,
+            perfile_min,
             out_file,
         } => {
-            let mut files: Vec<File> = Vec::new();
+            assert!(
+                genome_files.len() * perfile_min <= num,
+                "Cannot sample from {} files with given minimum {perfile_min} and number requested {num}!",
+                genome_files.len()
+            );
 
-            for file_name in genome_files {
-                let file = File::open(file_name).expect("File not found");
-                println!("{:?}", file);
-                files.push(file);
+            let mut out_file = File::create(out_file).expect("Coud not create output file");
+            let mut genome_files = genome_files.clone();
+            genome_files.shuffle(&mut rng);
+
+            let mut remaining = num - genome_files.len() * perfile_min;
+            for file_path in genome_files {
+                let file = File::open(&file_path).expect("File not found");
+                let file_name = Path::new(&file_path).file_name().unwrap();
+                let additional = rng.random_range(0..=remaining);
+                remaining -= additional;
+                let mut pick_from_file = perfile_min + additional;
+
+                let mut reader = FastaReader::new(file);
+                let mut records: Vec<Record> = reader
+                    .records()
+                    .map(|record| match record {
+                        Ok(r) => r,
+                        Err(ParseError::IoError(err)) => panic!("Parse error: {err:?}"),
+                        Err(ParseError::FormatError(err)) => panic!("Format error: {err:?}"),
+                    })
+                    .collect();
+
+                while pick_from_file != 0 {
+                    let Record {
+                        identifier,
+                        sequence,
+                    } = records.choose(&mut rng).unwrap();
+                    let mut sample_size = rng.random_range(min..=max);
+
+                    if sample_size <= sequence.len() {
+                        pick_from_file -= 1;
+
+                        let start = rng.random_range(0..=(sequence.len() - sample_size));
+                        let sample = &sequence[start..(start + sample_size)];
+                        write!(out_file, ">file: {file_name:?} size:{sample_size} record: {identifier}\n{sample}\n")
+                            .expect("output write failed");
+                    }
+                }
             }
         }
         Command::FromGenes {
