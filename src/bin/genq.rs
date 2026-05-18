@@ -12,9 +12,9 @@ use std::{
     io::{Read, Write},
 };
 
-use rand::prelude::*;
-use rand::{Rng};
+use rand::Rng;
 use rand::distr::{Distribution, slice::Choose};
+use rand::prelude::*;
 
 #[derive(Parser, Debug)]
 #[command(name = "genq", version)]
@@ -88,42 +88,35 @@ fn random_string(n: usize) -> String {
 fn main() {
     env_logger::init();
 
+    let mut rng = rand::rng();
     let args = Args::parse();
 
     match args.command {
-        Command::Random { min, max, num, out_file } => {
+        Command::Random {
+            min,
+            max,
+            num,
+            out_file,
+        } => {
             let mut out_file = File::create(out_file).expect("Coud not create output file");
             let alphabet = ['A', 'C', 'T', 'G'];
             let dist = Choose::new(&alphabet).unwrap();
-            let mut rng = rand::rng();
-            
+
             for i in 1..=num {
                 let sample_size = rng.random_range(min..=max);
-                let string: String = dist
-                    .sample_iter(&mut rng)
-                    .take(sample_size)
-                    .collect();
+                let string: String = dist.sample_iter(&mut rng).take(sample_size).collect();
 
-                write!(out_file, ">id:{i} size:{sample_size}\n{string}\n").expect("output write failed");
+                write!(out_file, ">id:{i} size:{sample_size}\n{string}\n")
+                    .expect("output write failed");
             }
         }
-        Command::FromGenomes { genome_files, min, max, num, out_file } => {
-//            let mut index_file = File::open(index).expect("File not found");
-//            let query_file = File::open(query_file).expect("File not found");
-//            let mut bytes: Vec<u8> = Vec::new();
-//            index_file.read_to_end(&mut bytes).expect("Read failed");
-//
-//            let index: DefaultPufferfishIndex = from_bytes(&bytes).unwrap();
-//
-//            let mut reader = FastaReader::new(query_file);
-//            for record in reader.records() {
-//                let Record {
-//                    identifier,
-//                    sequence,
-//                } = record.expect("failed to read record");
-//                let found = index.query(sequence);
-//                println!("{identifier}: {found}");
-//            }
+        Command::FromGenomes {
+            genome_files,
+            min,
+            max,
+            num,
+            out_file,
+        } => {
             let mut files: Vec<File> = Vec::new();
 
             for file_name in genome_files {
@@ -132,7 +125,13 @@ fn main() {
                 files.push(file);
             }
         }
-        Command::FromGenes { gene_files, min, max, num, out_file } => {
+        Command::FromGenes {
+            gene_files,
+            min,
+            max,
+            num,
+            out_file,
+        } => {
             let mut files: Vec<File> = Vec::new();
 
             for file_name in gene_files {
