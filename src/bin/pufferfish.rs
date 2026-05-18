@@ -7,6 +7,7 @@ use lib::{
 use postcard::{from_bytes, to_stdvec};
 use std::{
     fs::File,
+    io,
     io::{Read, Write},
 };
 
@@ -45,7 +46,7 @@ enum Command {
     },
 }
 
-fn main() {
+fn main() -> io::Result<()> {
     env_logger::init();
 
     let args = Args::parse();
@@ -55,19 +56,19 @@ fn main() {
             let in_file = File::open(file).expect("File not found");
             let mut out_file = File::create(out_file).expect("Coud not create output file");
             let mut reader = FastaReader::new(in_file);
-            let sequences: Vec<String> = reader
+            let records: Vec<(String, String)> = reader
                 .records()
                 .map(|record| match record {
                     Ok(Record {
-                        identifier: _,
+                        identifier,
                         sequence,
-                    }) => sequence,
+                    }) => (identifier, sequence),
                     Err(ParseError::IoError(err)) => panic!("Parse error: {err:?}"),
                     Err(ParseError::FormatError(err)) => panic!("Format error: {err:?}"),
                 })
                 .collect();
 
-            let index = DefaultPufferfishIndex::new(*k, sequences);
+            let index = DefaultPufferfishIndex::new(*k, records);
 
             let bytes: Vec<u8> = to_stdvec(&index).unwrap();
             out_file.write_all(&bytes).expect("Failed to write bytes");
@@ -75,12 +76,14 @@ fn main() {
         Command::Query {
             index,
             query_file,
-            out_file: _,
+            out_file,
         } => {
             let mut index_file = File::open(index).expect("File not found");
             let query_file = File::open(query_file).expect("File not found");
             let mut bytes: Vec<u8> = Vec::new();
             index_file.read_to_end(&mut bytes).expect("Read failed");
+
+            let mut out_file = File::create(out_file).expect("Coud not create output file");
 
             let index: DefaultPufferfishIndex = from_bytes(&bytes).unwrap();
 
@@ -90,8 +93,9 @@ fn main() {
                     identifier,
                     sequence,
                 } = record.expect("failed to read record");
-                let found = index.query(sequence);
-                println!("{identifier}: {found}");
+                write!(out_file, "{identifier}\n")?;
+                let found_colors = index.query(sequence);
+                write!(out_file, "found in: {found_colors:?}\n")?;
             }
         }
         Command::Inspect { index } => {
@@ -104,4 +108,6 @@ fn main() {
             index.print_stats();
         }
     }
+
+    Ok(())
 }

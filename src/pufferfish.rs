@@ -19,13 +19,14 @@ pub struct PufferfishIndex<HM: MapLike> {
     useq: Sequence,
     bv: BitVector,
     utab: Vec<u8>,
+    identifiers: Vec<String>,
 }
 
 pub type HashMapPufferfishIndex = PufferfishIndex<HashMap<Sequence, usize>>;
 pub type DefaultPufferfishIndex = PufferfishIndex<MPHF>;
 
 impl<HM: MapLike> PufferfishIndex<HM> {
-    pub fn new<S: AsRef<[u8]>>(k: usize, reference_strings: Vec<S>) -> Self {
+    pub fn new<S: Into<String>, T: AsRef<[u8]>>(k: usize, reference_strings: Vec<(S, T)>) -> Self {
         let n_colors = reference_strings.len();
         let color_bytes = n_colors.div_ceil(8);
 
@@ -33,10 +34,13 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let start = Instant::now();
 
         // convert to 2-bit representation
+        let mut identifiers: Vec<String> = Vec::with_capacity(n_colors);
         let reference_strings: Vec<Vec<u8>> = reference_strings
             .into_iter()
-            .map(|s| {
-                s.as_ref()
+            .map(|(identifier, sequence)| {
+                identifiers.push(identifier.into());
+                sequence
+                    .as_ref()
                     .into_iter()
                     .map(|&c| index_in_acgt(c) as u8)
                     .collect()
@@ -333,6 +337,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
             useq,
             bv,
             utab,
+            identifiers,
         }
     }
 
@@ -375,7 +380,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         None
     }
 
-    pub fn query<S: AsRef<[u8]>>(&self, q: S) -> bool {
+    pub fn query<S: AsRef<[u8]>>(&self, q: S) -> Vec<&str> {
         let q = q.as_ref();
         let color_bytes = self.n_colors.div_ceil(8);
         let mut colors: Vec<u8> = vec![0xff; color_bytes];
@@ -389,7 +394,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
                 }
                 hint = Some((pos, rank));
             } else {
-                return false;
+                return vec![];
             }
         }
         if chunks_iterator.remainder().len() > 0 {
@@ -400,11 +405,19 @@ impl<HM: MapLike> PufferfishIndex<HM> {
                     colors[i] &= self.utab[utab_offset + i];
                 }
             } else {
-                return false;
+                return vec![];
             }
         }
-        // is there a color that describes every k-mer?
-        colors.into_iter().any(|c| c > 0)
+        let mut found_colors = vec![];
+        // find colors that describe every k-mer
+        for (i, mut c) in colors.into_iter().enumerate() {
+            while c > 0 {
+                let lowest_one = c.trailing_zeros();
+                found_colors.push(&self.identifiers[i * 8 + lowest_one as usize][..]);
+                c &= !(1 << lowest_one);
+            }
+        }
+        found_colors
     }
 
     pub fn print_stats(&self) {
@@ -419,21 +432,21 @@ mod tests {
 
     #[test]
     fn basic_hashmap_test() {
-        let sequences = vec!["CTAAGAT", "CGATGCA", "TAAGAGG"];
+        let sequences = vec![("a", "CTAAGAT"), ("b", "CGATGCA"), ("c", "TAAGAGG")];
         let index = HashMapPufferfishIndex::new(3, sequences);
 
-        assert!(index.query("CTAAGAT"));
-        assert!(index.query("CGATGCA"));
-        assert!(index.query("TAAGAGG"));
+        assert!(index.query("CTAAGAT").contains(&"a"));
+        assert!(index.query("CGATGCA").contains(&"b"));
+        assert!(index.query("TAAGAGG").contains(&"c"));
     }
 
     #[test]
     fn basic_mphf_test() {
-        let sequences = vec!["CTAAGAT", "CGATGCA", "TAAGAGG"];
+        let sequences = vec![("a", "CTAAGAT"), ("b", "CGATGCA"), ("c", "TAAGAGG")];
         let index = DefaultPufferfishIndex::new(3, sequences);
 
-        assert!(index.query("CTAAGAT"));
-        assert!(index.query("CGATGCA"));
-        assert!(index.query("TAAGAGG"));
+        assert!(index.query("CTAAGAT").contains(&"a"));
+        assert!(index.query("CGATGCA").contains(&"b"));
+        assert!(index.query("TAAGAGG").contains(&"c"));
     }
 }

@@ -2,8 +2,8 @@
 
 use clap::{Parser, Subcommand};
 use env_logger;
-use log::debug;
 use lib::fasta::{FastaReader, ParseError, Record};
+use log::debug;
 use std::path::Path;
 use std::{collections::BTreeSet, fs::File, io::Write};
 
