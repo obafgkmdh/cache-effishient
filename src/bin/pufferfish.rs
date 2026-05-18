@@ -21,8 +21,8 @@ struct Args {
 #[derive(Debug, Subcommand)]
 enum Command {
     Index {
-        #[arg(long, short = 'f')]
-        file: String,
+        #[arg(long, short = 'f', value_delimiter = ' ', num_args = 1..)]
+        files: Vec<String>,
 
         #[arg(long, short = 'k')]
         k: usize,
@@ -52,20 +52,27 @@ fn main() -> io::Result<()> {
     let args = Args::parse();
 
     match &args.command {
-        Command::Index { file, k, out_file } => {
-            let in_file = File::open(file).expect("File not found");
+        Command::Index { files, k, out_file } => {
             let mut out_file = File::create(out_file).expect("Coud not create output file");
-            let mut reader = FastaReader::new(in_file);
-            let records: Vec<(String, String)> = reader
-                .records()
-                .map(|record| match record {
-                    Ok(Record {
-                        identifier,
-                        sequence,
-                    }) => (identifier, sequence),
-                    Err(ParseError::IoError(err)) => panic!("Parse error: {err:?}"),
-                    Err(ParseError::FormatError(err)) => panic!("Format error: {err:?}"),
+
+            let records: Vec<(String, String)> = files
+                .into_iter()
+                .map(|file| {
+                    let in_file = File::open(file).expect("File not found");
+                    let mut reader = FastaReader::new(in_file);
+                    reader
+                        .records()
+                        .map(|record| match record {
+                            Ok(Record {
+                                identifier,
+                                sequence,
+                            }) => (identifier, sequence),
+                            Err(ParseError::IoError(err)) => panic!("Parse error: {err:?}"),
+                            Err(ParseError::FormatError(err)) => panic!("Format error: {err:?}"),
+                        })
+                        .collect::<Vec<_>>()
                 })
+                .flatten()
                 .collect();
 
             let index = DefaultPufferfishIndex::new(*k, records);
