@@ -1,8 +1,7 @@
 use crate::{
     bitvector::BitVector,
-    bloom_filter::BloomFilter,
     mphf::MPHF,
-    util::{HyperLogLog, MapLike, Sequence, index_in_acgt},
+    util::{HyperLogLog, MapLike, Sequence, index_in_acgt, murmur_hash_64},
 };
 use log::{debug, trace};
 use serde::{Deserialize, Serialize};
@@ -10,6 +9,7 @@ use std::{
     collections::{HashMap, HashSet},
     time::Instant,
 };
+use xorf::{BinaryFuse8, Filter};
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct PufferfishIndex<HM: MapLike> {
@@ -50,7 +50,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let mut unique_edges_sketch = HyperLogLog::new(11);
 
         for string in reference_strings.iter() {
-            for window in string.windows(k) {
+            for window in string.windows(k + 1) {
                 // insert edge
                 unique_edges_sketch.insert(&window);
             }
@@ -58,59 +58,60 @@ impl<HM: MapLike> PufferfishIndex<HM> {
 
         let estimated_unique_edges = unique_edges_sketch.count();
 
-        debug!(
+        trace!(
             "approx. count unique edges: {}ms",
             (Instant::now() - start).as_millis()
         );
+        debug!("approx. unique edges: {}", estimated_unique_edges);
 
         let start = Instant::now();
 
         // Build De Bruijn graph
-        let mut starts: HashSet<&[u8]> = HashSet::new();
         let mut ends: HashSet<&[u8]> = HashSet::new();
 
-        let mut edges_filter = BloomFilter::with_fpr(0.01, estimated_unique_edges);
-
+        let mut unique_hashes: HashSet<u64> = HashSet::with_capacity(estimated_unique_edges);
         for string in reference_strings.iter() {
-            // mark starts/ends
-            starts.insert(&string[..k]);
+            // mark ends
             ends.insert(&string[string.len() - k..]);
 
             for window in string.windows(k + 1) {
                 // insert edge
-                edges_filter.insert_key(&window);
+                unique_hashes.insert(murmur_hash_64(window));
             }
         }
 
+        let unique_hashes: Vec<u64> = unique_hashes.into_iter().collect();
+
+        let edges_filter = BinaryFuse8::try_from(&unique_hashes).unwrap();
+
         trace!(
-            "build bloom filter: {}ms",
+            "build xor filter: {}ms",
             (Instant::now() - start).as_millis()
         );
 
+        // Find junctions (all places where a unipath starts)
+        // Hashmap will store color information
+        let mut junctions: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+
         let mut critical_false_positives: HashSet<Vec<u8>> = HashSet::new();
+
         let mut maybe_branch: HashSet<&[u8]> = HashSet::new();
+
         let mut maybe_multiple_back_edges: HashSet<&[u8]> = HashSet::new();
 
         let start = Instant::now();
 
         for string in reference_strings.iter() {
-            // check backwards edges from start
-            let mut key: Vec<u8> = vec![0];
-            key.extend(&string[..k]);
-
-            for c in [0, 1, 2, 3] {
-                key[0] = c;
-                if edges_filter.query_key(&key) {
-                    critical_false_positives.insert(key.clone());
-                }
-            }
+            // we don't check backwards edges from start, since we already know starts are
+            // junctions
+            junctions.insert(string[..k].to_vec(), vec![0; color_bytes]);
 
             for window in string.windows(k + 1) {
                 // check other forward edges
                 let mut key: Vec<u8> = window.to_vec();
                 for c in [1, 2, 3] {
                     key[k] = window[k] ^ c;
-                    if edges_filter.query_key(&key) {
+                    if edges_filter.contains(&murmur_hash_64(&key)) {
                         critical_false_positives.insert(key.clone());
                         maybe_branch.insert(&window[..k]);
                     }
@@ -122,7 +123,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
                 // check other backwards edges
                 for c in [1, 2, 3] {
                     key[0] = window[0] ^ c;
-                    if edges_filter.query_key(&key) {
+                    if edges_filter.contains(&murmur_hash_64(&key)) {
                         critical_false_positives.insert(key.clone());
                         maybe_multiple_back_edges.insert(&window[1..]);
                     }
@@ -135,7 +136,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
 
             for c in [0, 1, 2, 3] {
                 key[k] = c;
-                if edges_filter.query_key(&key) {
+                if edges_filter.contains(&murmur_hash_64(&key)) {
                     critical_false_positives.insert(key.clone());
                 }
             }
@@ -158,7 +159,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         // remove critical true positives
         for string in reference_strings.iter() {
             for window in string.windows(k + 1) {
-                critical_false_positives.remove(&window.to_vec());
+                critical_false_positives.remove(window);
             }
         }
 
@@ -169,7 +170,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         debug!("{} cfps", critical_false_positives.len());
 
         let is_real_edge = |key: &[u8]| -> bool {
-            edges_filter.query_key(key.as_ref()) && !critical_false_positives.contains(key.as_ref())
+            edges_filter.contains(&murmur_hash_64(key)) && !critical_false_positives.contains(key)
         };
 
         let start = Instant::now();
@@ -202,11 +203,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
 
         let start = Instant::now();
 
-        // Find junctions (all places where a unipath starts)
-        // Hashmap will store color information
-        let mut junctions: HashMap<Vec<u8>, Vec<u8>> =
-            HashMap::from_iter(starts.iter().map(|&k| (k.to_vec(), vec![0; color_bytes])));
-
+        // Find the rest of the junctions
         for node in branch_or_end.iter() {
             let mut key: Vec<u8> = node.to_vec();
             key.push(0);
@@ -236,7 +233,10 @@ impl<HM: MapLike> PufferfishIndex<HM> {
             }
         }
 
-        trace!("find junctions: {}ms", (Instant::now() - start).as_millis());
+        trace!(
+            "find remaining junctions: {}ms",
+            (Instant::now() - start).as_millis()
+        );
         debug!("number of junctions: {}", junctions.len());
 
         let start = Instant::now();
@@ -290,7 +290,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
                 }
                 key.remove(0);
 
-                if junctions.contains_key(&key[..]) {
+                if junctions.contains_key(&key) {
                     // reached a junction
                     break;
                 }
