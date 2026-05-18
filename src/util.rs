@@ -47,11 +47,11 @@ pub fn murmur_hash_64(key: &[u8]) -> u64 {
         acc = acc.wrapping_mul(0x5bd1e9955bd1e995u64);
         acc ^= acc >> 47;
     }
-    for &c in remainder {
-        acc ^= c as u64;
-        acc = acc.wrapping_mul(0x5bd1e9955bd1e995u64);
-        acc ^= acc >> 47;
+    for (i, &c) in remainder.iter().enumerate() {
+        acc ^= (c as u64) << (8 * i);
     }
+    acc = acc.wrapping_mul(0x5bd1e9955bd1e995u64);
+    acc ^= acc >> 47;
     acc
 }
 
@@ -63,6 +63,12 @@ pub struct Sequence(Vec<u8>);
 impl Sequence {
     pub fn new() -> Self {
         Self(vec![0])
+    }
+
+    pub fn with_capacity(length: usize) -> Self {
+        let mut inner = Vec::with_capacity(1 + length.div_ceil(8));
+        inner.push(0);
+        Self(inner)
     }
 
     #[inline(always)]
@@ -290,11 +296,16 @@ impl HyperLogLog {
         estimate.round() as usize
     }
 
-    #[allow(dead_code)]
     // Standard error of count estimate
     pub fn standard_error(&self) -> f64 {
         let m = 1u64 << self.log_m;
         1.04f64 / (m as f64).sqrt()
+    }
+
+    // Compute upper bound on count using stddev
+    // e.g., stddevs = 2 is greater than actual count about 97.7% of the time
+    pub fn upper_bound(&self, stddevs: f64) -> usize {
+        (self.count() as f64 * (1.0f64 + self.standard_error() * stddevs)) as usize
     }
 }
 

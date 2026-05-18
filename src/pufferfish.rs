@@ -47,29 +47,36 @@ impl<HM: MapLike> PufferfishIndex<HM> {
 
         let start = Instant::now();
 
+        let mut unique_nodes_sketch = HyperLogLog::new(11);
         let mut unique_edges_sketch = HyperLogLog::new(11);
 
         for string in reference_strings.iter() {
+            unique_nodes_sketch.insert(&string[..k]);
             for window in string.windows(k + 1) {
                 // insert edge
                 unique_edges_sketch.insert(&window);
+                unique_nodes_sketch.insert(&window[1..]);
             }
         }
 
-        let estimated_unique_edges = unique_edges_sketch.count();
+        let unique_edges_bound = unique_edges_sketch.upper_bound(2.0);
+        let unique_nodes_bound = unique_nodes_sketch.upper_bound(2.0);
 
         trace!(
             "approx. count unique edges: {}ms",
             (Instant::now() - start).as_millis()
         );
-        debug!("approx. unique edges: {}", estimated_unique_edges);
+        debug!(
+            "approx. bounds on unique edges: {}, unique nodes: {}",
+            unique_edges_bound, unique_nodes_bound
+        );
 
         let start = Instant::now();
 
         // Build De Bruijn graph
-        let mut ends: HashSet<&[u8]> = HashSet::new();
+        let mut ends: HashSet<&[u8]> = HashSet::with_capacity(reference_strings.len());
 
-        let mut unique_hashes: HashSet<u64> = HashSet::with_capacity(estimated_unique_edges);
+        let mut unique_hashes: HashSet<u64> = HashSet::with_capacity(unique_edges_bound);
         for string in reference_strings.iter() {
             // mark ends
             ends.insert(&string[string.len() - k..]);
@@ -93,11 +100,12 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         // Hashmap will store color information
         let mut junctions: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
 
+        // false positive forward edges
         let mut critical_false_positives: HashSet<Vec<u8>> = HashSet::new();
 
         let mut maybe_branch: HashSet<&[u8]> = HashSet::new();
 
-        let mut maybe_multiple_back_edges: HashSet<&[u8]> = HashSet::new();
+        let mut maybe_multiple_back_edges: HashSet<Vec<u8>> = HashSet::new();
 
         let start = Instant::now();
 
@@ -124,8 +132,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
                 for c in [1, 2, 3] {
                     key[0] = window[0] ^ c;
                     if edges_filter.contains(&murmur_hash_64(&key)) {
-                        critical_false_positives.insert(key.clone());
-                        maybe_multiple_back_edges.insert(&window[1..]);
+                        maybe_multiple_back_edges.insert(key.clone());
                     }
                 }
             }
@@ -160,6 +167,11 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         for string in reference_strings.iter() {
             for window in string.windows(k + 1) {
                 critical_false_positives.remove(window);
+                if maybe_multiple_back_edges.remove(window) {
+                    junctions
+                        .entry(window[1..].to_vec())
+                        .or_insert_with(|| vec![0; color_bytes]);
+                }
             }
         }
 
@@ -167,7 +179,11 @@ impl<HM: MapLike> PufferfishIndex<HM> {
             "identify true positives: {}ms",
             (Instant::now() - start).as_millis()
         );
-        debug!("{} cfps", critical_false_positives.len());
+        debug!(
+            "{} cfps, {} junctions so far",
+            critical_false_positives.len(),
+            junctions.len()
+        );
 
         let is_real_edge = |key: &[u8]| -> bool {
             edges_filter.contains(&murmur_hash_64(key)) && !critical_false_positives.contains(key)
@@ -216,23 +232,6 @@ impl<HM: MapLike> PufferfishIndex<HM> {
             }
         }
 
-        for node in maybe_multiple_back_edges {
-            let mut key: Vec<u8> = vec![0];
-            key.extend(node);
-            let mut count = 0;
-            for c in [0, 1, 2, 3] {
-                key[0] = c;
-                if is_real_edge(&key) {
-                    count += 1;
-                    if count > 1 {
-                        // multiple back edges is a junction
-                        junctions.insert(node.to_vec(), vec![0; color_bytes]);
-                        break;
-                    }
-                }
-            }
-        }
-
         trace!(
             "find remaining junctions: {}ms",
             (Instant::now() - start).as_millis()
@@ -259,10 +258,14 @@ impl<HM: MapLike> PufferfishIndex<HM> {
 
         let start = Instant::now();
 
-        let mut useq: Sequence = Sequence::new();
-        let mut pos: Vec<(Sequence, usize)> = Vec::new();
-        let mut bv: Vec<u64> = Vec::new();
-        let mut utab: Vec<u8> = Vec::new();
+        let estimated_useq_size = junctions.len() * (k - 1) + unique_nodes_bound;
+
+        debug!("estimated useq size bound: {}", estimated_useq_size);
+
+        let mut useq: Sequence = Sequence::with_capacity(estimated_useq_size);
+        let mut pos: Vec<(Sequence, usize)> = Vec::with_capacity(unique_nodes_bound);
+        let mut bv: Vec<u64> = Vec::with_capacity(estimated_useq_size.div_ceil(64));
+        let mut utab: Vec<u8> = Vec::with_capacity(junctions.len() * color_bytes);
 
         // Create a unipath at each junction
         for (node, colors) in junctions.iter() {
@@ -309,6 +312,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
 
         trace!("find unipaths: {}ms", (Instant::now() - start).as_millis());
         debug!("number of unipaths: {}", utab.len() / color_bytes);
+        debug!("useq size: {}", useq.len());
 
         let start = Instant::now();
 
