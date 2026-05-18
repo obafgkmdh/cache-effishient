@@ -12,16 +12,15 @@ pub struct MPHF {
     values: IntVector,
 }
 
-impl FromIterator<(Sequence, usize)> for MPHF {
-    fn from_iter<T: IntoIterator<Item = (Sequence, usize)>>(iter: T) -> Self {
+impl MapLike for MPHF {
+    fn from_hashset(h: HashSet<(Sequence, usize)>) -> Self {
         let mut max_value = 0;
 
-        let mut kv: HashSet<(Sequence, usize)> = iter
-            .into_iter()
-            .inspect(|&(_, v)| {
-                max_value = max(max_value, v);
-            })
-            .collect();
+        let mut kv: HashSet<(Sequence, usize)> = h;
+
+        for (_k, v) in kv.iter() {
+            max_value = max(max_value, *v);
+        }
 
         let n_bits = max_value.bit_width();
 
@@ -95,9 +94,7 @@ impl FromIterator<(Sequence, usize)> for MPHF {
             values,
         }
     }
-}
 
-impl MapLike for MPHF {
     fn get(&self, key: &Sequence) -> Option<usize> {
         let mut salt = 0;
         let mut bit_offset = 0;
@@ -124,7 +121,7 @@ mod tests {
 
     #[test]
     fn mphf_test() {
-        let kv: Vec<(Sequence, usize)> = (0..1000)
+        let kv: HashSet<(Sequence, usize)> = (0..1000)
             .map(|i| {
                 (
                     Sequence::from_2bc(
@@ -137,7 +134,7 @@ mod tests {
             })
             .collect();
 
-        let mphf = MPHF::from_iter(kv.iter().cloned());
+        let mphf = MPHF::from_hashset(kv.clone());
 
         for (k, v) in kv.into_iter() {
             assert_eq!(mphf.get(&k), Some(v));

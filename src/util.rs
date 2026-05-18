@@ -1,15 +1,20 @@
 use serde::{Deserialize, Serialize};
 use std::{
     cmp::max,
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     hash::{DefaultHasher, Hasher},
 };
 
-pub trait MapLike: FromIterator<(Sequence, usize)> {
+pub trait MapLike {
+    fn from_hashset(h: HashSet<(Sequence, usize)>) -> Self;
     fn get(&self, key: &Sequence) -> Option<usize>;
 }
 
 impl MapLike for HashMap<Sequence, usize> {
+    fn from_hashset(h: HashSet<(Sequence, usize)>) -> Self {
+        HashMap::from_iter(h)
+    }
+
     fn get(&self, key: &Sequence) -> Option<usize> {
         self.get(key).copied()
     }
@@ -80,6 +85,10 @@ impl Sequence {
 
     pub fn len(&self) -> usize {
         (self.0.len() - 1) * 4 - ((4 - self.get_bit_offset()) % 4) as usize
+    }
+
+    pub fn at(&self, idx: usize) -> u8 {
+        (self.0[1 + idx / 4] >> (idx % 4)) & 0x3
     }
 
     // Extend sequence with a 2-bit-encoded byte array
@@ -238,6 +247,7 @@ impl Sequence {
 }
 
 // HyperLogLog sketch: https://en.wikipedia.org/wiki/HyperLogLog
+#[allow(dead_code)]
 pub struct HyperLogLog {
     log_m: u8,
     mask: u64,
@@ -245,6 +255,7 @@ pub struct HyperLogLog {
     counters: Vec<u8>,
 }
 
+#[allow(dead_code)]
 impl HyperLogLog {
     // Create new HyperLogLog sketch with 2^log_m counters
     pub fn new(log_m: u8) -> Self {

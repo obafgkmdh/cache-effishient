@@ -3,7 +3,7 @@ use rayon::prelude::*;
 use crate::{
     bitvector::BitVector,
     mphf::MPHF,
-    util::{HyperLogLog, MapLike, Sequence, index_in_acgt, murmur_hash_64},
+    util::{MapLike, Sequence, index_in_acgt, murmur_hash_64},
 };
 use log::{debug, trace};
 use serde::{Deserialize, Serialize};
@@ -32,11 +32,6 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let n_colors = reference_strings.len();
         let color_bytes = n_colors.div_ceil(8);
 
-        // Hashmap will store color information
-        let mut junctions: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
-
-        let mut ends: HashSet<&[u8]> = HashSet::with_capacity(reference_strings.len());
-
         trace!("building pufferfish index (k = {})", k);
         let start = Instant::now();
 
@@ -55,32 +50,6 @@ impl<HM: MapLike> PufferfishIndex<HM> {
             .collect();
 
         trace!("to 2-bit repr: {}ms", (Instant::now() - start).as_millis());
-
-        let start = Instant::now();
-
-        let mut unique_nodes_sketch = HyperLogLog::new(11);
-
-        for string in reference_strings.iter() {
-            // mark starts as junctions
-            junctions.insert(string[..k].to_vec(), vec![0; color_bytes]);
-
-            unique_nodes_sketch.insert(&string[..k]);
-            for window in string.windows(k + 1) {
-                // insert edge
-                unique_nodes_sketch.insert(&window[1..]);
-            }
-
-            // mark ends
-            ends.insert(&string[string.len() - k..]);
-        }
-
-        let unique_nodes_bound = unique_nodes_sketch.upper_bound(2.0);
-
-        trace!(
-            "approx. count unique edges: {}ms",
-            (Instant::now() - start).as_millis()
-        );
-        debug!("approx. bound on unique nodes: {}", unique_nodes_bound);
 
         let start = Instant::now();
 
@@ -199,8 +168,15 @@ impl<HM: MapLike> PufferfishIndex<HM> {
 
         let start = Instant::now();
 
+        // Hashmap will store color information
+        let mut junctions: HashMap<Vec<u8>, Vec<u8>> = HashMap::new();
+        let mut ends: HashSet<&[u8]> = HashSet::with_capacity(reference_strings.len());
+
         // remove critical true positives
         for string in reference_strings.iter() {
+            // mark starts as junctions
+            junctions.insert(string[..k].to_vec(), vec![0; color_bytes]);
+
             for window in string.windows(k + 1) {
                 critical_false_positives.remove(window);
                 if maybe_multiple_back_edges.remove(window) {
@@ -209,6 +185,9 @@ impl<HM: MapLike> PufferfishIndex<HM> {
                         .or_insert_with(|| vec![0; color_bytes]);
                 }
             }
+
+            // mark ends
+            ends.insert(&string[string.len() - k..]);
         }
 
         trace!(
@@ -294,26 +273,13 @@ impl<HM: MapLike> PufferfishIndex<HM> {
 
         let start = Instant::now();
 
-        let estimated_useq_size = junctions.len() * (k - 1) + unique_nodes_bound;
-
-        debug!("estimated useq size bound: {}", estimated_useq_size);
-
-        let mut useq: Sequence = Sequence::with_capacity(estimated_useq_size);
-        let mut pos: Vec<(Sequence, usize)> = Vec::with_capacity(unique_nodes_bound);
-        let mut bv: Vec<u64> = Vec::with_capacity(estimated_useq_size.div_ceil(64));
-        let mut utab: Vec<u8> = Vec::with_capacity(junctions.len() * color_bytes);
+        let mut useq_len = 0;
+        let mut unipaths: Vec<Vec<u8>> = Vec::with_capacity(junctions.len());
 
         // Create a unipath at each junction
-        for (node, colors) in junctions.iter() {
+        for (node, _colors) in junctions.iter() {
             let mut unipath: Vec<u8> = node.clone();
             let mut key: Vec<u8> = node.clone();
-            let mut useq_idx = useq.len();
-            pos.push((Sequence::from_2bc(&key), useq_idx));
-            useq_idx += 1;
-
-            // create entry in utab
-            utab.extend(colors);
-
             loop {
                 if branch_or_end.contains(&key[..]) {
                     // no or multiple paths
@@ -335,24 +301,52 @@ impl<HM: MapLike> PufferfishIndex<HM> {
                 }
 
                 unipath.push(key[k - 1]);
-                pos.push((Sequence::from_2bc(&key), useq_idx));
-                useq_idx += 1;
             }
-            useq.extend_from_2bit_rep(unipath);
-
-            // set bit in bv
-            let bit_idx = useq.len() - 1;
-            bv.resize_with(useq.len().div_ceil(64), Default::default);
-            bv[bit_idx / 64] |= 1 << (bit_idx % 64);
+            useq_len += unipath.len();
+            unipaths.push(unipath);
         }
 
-        trace!("find unipaths: {}ms", (Instant::now() - start).as_millis());
-        debug!("number of unipaths: {}", utab.len() / color_bytes);
-        debug!("useq size: {}", useq.len());
+        trace!(
+            "create unipaths: {}ms",
+            (Instant::now() - start).as_millis()
+        );
+        debug!("useq size: {}", useq_len);
 
         let start = Instant::now();
 
-        let h: HM = HM::from_iter(pos);
+        // do some sorting here
+
+        let n_unique_nodes = useq_len - junctions.len() * (k - 1);
+
+        let mut useq: Sequence = Sequence::with_capacity(useq_len);
+        let mut pos: HashSet<(Sequence, usize)> = HashSet::with_capacity(n_unique_nodes);
+        let mut bv: Vec<u64> = vec![0; useq_len.div_ceil(64)];
+        let mut utab: Vec<u8> = Vec::with_capacity(junctions.len() * color_bytes);
+
+        for unipath in unipaths {
+            // update utab
+            utab.extend(&junctions[&unipath[..k]]);
+
+            // update pos
+            let mut useq_idx = useq.len();
+            for window in unipath.windows(k) {
+                pos.insert((Sequence::from_2bc(window), useq_idx));
+                useq_idx += 1;
+            }
+
+            // update useq
+            useq.extend_from_2bit_rep(unipath);
+
+            // update bv
+            let bit_idx = useq.len() - 1;
+            bv[bit_idx / 64] |= 1 << (bit_idx % 64);
+        }
+
+        trace!("assemble pufferfish components: {}ms", (Instant::now() - start).as_millis());
+
+        let start = Instant::now();
+
+        let h: HM = HM::from_hashset(pos);
 
         trace!("create map: {}ms", (Instant::now() - start).as_millis());
 
