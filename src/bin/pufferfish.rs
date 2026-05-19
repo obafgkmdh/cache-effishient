@@ -127,9 +127,9 @@ fn main() -> io::Result<()> {
                 } = record.expect("failed to read record");
                 write!(out_file, "{identifier}\n")?;
                 let found_colors = if same_unitig_hint == 1 {
-                    index.query::<true, _>(sequence);
+                    index.query::<true, _>(sequence)
                 } else {
-                    index.query::<false, _>(sequence);
+                    index.query::<false, _>(sequence)
                 };
                 write!(out_file, "found in: {found_colors:?}\n")?;
             }
