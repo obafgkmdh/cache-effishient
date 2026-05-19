@@ -72,10 +72,11 @@ fn main() {
         Command::Query {
             index,
             query_file,
-            out_file: _,
+            out_file,
         } => {
             let mut index_file = File::open(index).expect("File not found");
             let query_file = File::open(query_file).expect("File not found");
+            let mut out_file = File::create(out_file).expect("Coud not create output file");
             let mut bytes: Vec<u8> = Vec::new();
             index_file.read_to_end(&mut bytes).expect("Read failed");
 
@@ -88,7 +89,8 @@ fn main() {
                     sequence,
                 } = record.expect("failed to read record");
                 let found = dbg.query(sequence);
-                println!("{identifier}: {found}");
+                // println!("{identifier}: {found}");
+                write!(out_file, "{identifier}: {found}").expect("output write failed");
             }
         }
         Command::Inspect { index } => {
