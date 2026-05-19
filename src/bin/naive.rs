@@ -90,7 +90,7 @@ fn main() {
                 } = record.expect("failed to read record");
                 let found = dbg.query(sequence);
                 // println!("{identifier}: {found}");
-                write!(out_file, "{identifier}: {found}").expect("output write failed");
+                write!(out_file, "{identifier}: {found}\n").expect("output write failed");
             }
         }
         Command::Inspect { index } => {
