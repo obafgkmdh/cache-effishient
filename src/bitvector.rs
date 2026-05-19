@@ -169,9 +169,9 @@ impl BitVector {
         return Some((chunk_rank + subchunk_rank + final_rank) as usize);
     }
 
-    pub fn select(&self, rank: usize) -> Option<usize> {
-        let mut lb = 1;
-        let mut ub = self.n_bits + 1;
+    pub fn select_with_bounds(&self, rank: usize, lb: usize, ub: usize) -> Option<usize> {
+        let mut lb = lb + 1;
+        let mut ub = ub + 1;
         while lb < ub {
             let mid = lb + (ub - lb) / 2;
 
@@ -186,6 +186,11 @@ impl BitVector {
         } else {
             None
         }
+    }
+
+    #[inline(always)]
+    pub fn select(&self, rank: usize) -> Option<usize> {
+        self.select_with_bounds(rank, 0, self.n_bits)
     }
 }
 

@@ -23,7 +23,7 @@ struct Args {
 pub enum Strategy {
     #[default]
     Default,
-    Better,
+    Greedy,
 }
 
 #[derive(Debug, Subcommand)]
@@ -38,7 +38,7 @@ enum Command {
         #[arg(long, short = 'o')]
         out_file: String,
 
-        #[arg(value_enum, default_value_t)]
+        #[arg(long, short = 's', value_enum, default_value_t)]
         strategy: Strategy,
     },
     Query {
@@ -51,7 +51,7 @@ enum Command {
         #[arg(long, short = 'o', default_value = "/dev/stdout")]
         out_file: String,
 
-        #[arg(long, short = 'H', default_value_t = 1)]
+        #[arg(long, short = 'H', default_value_t = 2)]
         unitig_hint_level: u8,
     },
     Inspect {
@@ -76,7 +76,7 @@ fn main() -> io::Result<()> {
 
             let strategy = match strategy {
                 Strategy::Default => pufferfish::Strategy::Default,
-                Strategy::Better => pufferfish::Strategy::Better,
+                Strategy::Greedy => pufferfish::Strategy::Greedy,
             };
 
             let records: Vec<(String, String)> = files
@@ -108,7 +108,7 @@ fn main() -> io::Result<()> {
             index,
             query_file,
             out_file,
-            unitig_hint_level: same_unitig_hint,
+            unitig_hint_level,
         } => {
             let mut index_file = File::open(index).expect("File not found");
             let query_file = File::open(query_file).expect("File not found");
@@ -126,10 +126,12 @@ fn main() -> io::Result<()> {
                     sequence,
                 } = record.expect("failed to read record");
                 write!(out_file, "{identifier}\n")?;
-                let found_colors = if same_unitig_hint == 1 {
-                    index.query::<true, _>(sequence)
+                let found_colors = if unitig_hint_level == 2 {
+                    index.query::<2, _>(sequence)
+                } else if unitig_hint_level == 1 {
+                    index.query::<1, _>(sequence)
                 } else {
-                    index.query::<false, _>(sequence)
+                    index.query::<0, _>(sequence)
                 };
                 write!(out_file, "found in: {found_colors:?}\n")?;
             }

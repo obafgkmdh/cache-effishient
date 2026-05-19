@@ -8,7 +8,7 @@ use crate::{
 use log::{debug, trace};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::{HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     time::Instant,
 };
 use xorf::{BinaryFuse8, Filter};
@@ -17,7 +17,7 @@ use xorf::{BinaryFuse8, Filter};
 pub enum Strategy {
     #[default]
     Default,
-    Better,
+    Greedy,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -43,7 +43,10 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let n_colors = reference_strings.len();
         let color_bytes = n_colors.div_ceil(8);
 
-        trace!("building pufferfish index (k = {})", k);
+        trace!(
+            "building pufferfish index (k = {}, strategy: {:?})",
+            k, strategy
+        );
         let start = Instant::now();
 
         // convert to 2-bit representation
@@ -285,7 +288,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let start = Instant::now();
 
         let mut useq_len = 0;
-        let mut unipaths: HashMap<&[u8], (&[u8], HashMap<&[u8], u32>)> =
+        let mut unipaths: HashMap<&[u8], (&[u8], usize, HashMap<&[u8], u32>)> =
             HashMap::with_capacity(junctions.len());
 
         for string in reference_strings.iter() {
@@ -294,12 +297,11 @@ impl<HM: MapLike> PufferfishIndex<HM> {
                 if junctions.contains_key(&window[..]) {
                     if let Some(start) = cur_unitig {
                         // end current unipath
-                        *unipaths
+                        let data = unipaths
                             .entry(&string[start..start + k])
-                            .or_insert_with(|| (&string[start..i + k - 1], HashMap::new()))
-                            .1
-                            .entry(&window)
-                            .or_insert(0) += 1;
+                            .or_insert_with(|| (&string[start..i + k - 1], 0, HashMap::new()));
+                        data.1 += 1;
+                        *data.2.entry(&window).or_insert(0) += 1;
                     }
                     // start new unipath
                     cur_unitig = Some(i);
@@ -308,7 +310,10 @@ impl<HM: MapLike> PufferfishIndex<HM> {
             if let Some(start) = cur_unitig {
                 unipaths
                     .entry(&string[start..start + k])
-                    .or_insert_with(|| (&string[start..], HashMap::new()));
+                    .and_modify(|data| {
+                        data.1 += 1;
+                    })
+                    .or_insert_with(|| (&string[start..], 1, HashMap::new()));
             }
         }
 
@@ -322,11 +327,46 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         );
         debug!("useq size: {}", useq_len);
 
-        match strategy {
-            Strategy::Default => {}
-            Strategy::Better => {
-                let start = Instant::now();
+        let mut unipath_order: Vec<&[u8]> = Vec::with_capacity(unipaths.len());
 
+        match strategy {
+            Strategy::Default => {
+                unipath_order.extend(unipaths.keys());
+            }
+            Strategy::Greedy => {
+                let start = Instant::now();
+                let mut queue: BTreeSet<(usize, &[u8])> =
+                    unipaths.iter().map(|(&k, v)| (v.1, k)).collect();
+                let mut to_process: HashSet<&[u8]> = unipaths.keys().copied().collect();
+                while to_process.len() > 0 {
+                    // start with most common remaining unitig
+                    let (_count, mut cur_junction) = queue.pop_last().unwrap();
+                    unipath_order.push(cur_junction);
+                    to_process.remove(cur_junction);
+
+                    loop {
+                        let followers = &unipaths[cur_junction].2;
+                        let mut candids: Vec<&[u8]> = followers.keys().copied().collect();
+                        candids.sort_unstable_by_key(|&k| followers[k]);
+                        // find most common follower that we haven't processed yet
+                        match candids
+                            .iter()
+                            .rev()
+                            .find(|&candid| to_process.contains(candid))
+                        {
+                            Some(&candid) => {
+                                unipath_order.push(candid);
+                                to_process.remove(candid);
+                                queue.remove(&(unipaths[candid].1, candid));
+
+                                cur_junction = candid;
+                            }
+                            None => {
+                                break;
+                            }
+                        }
+                    }
+                }
                 trace!("sort unitigs: {}ms", (Instant::now() - start).as_millis());
             }
         }
@@ -340,7 +380,8 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let mut bv: Vec<u64> = vec![0; useq_len.div_ceil(64)];
         let mut utab: Vec<u8> = Vec::with_capacity(junctions.len() * color_bytes);
 
-        for (first_kmer, (unipath, _data)) in unipaths {
+        for first_kmer in unipath_order {
+            let unipath = unipaths[first_kmer].0;
             // update utab
             utab.extend(&junctions[first_kmer]);
 
@@ -388,7 +429,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
     }
 
     // query a single k-mer, return which unitig it's in
-    pub fn query_kmer<const USE_HINT: bool, S: AsRef<[u8]>>(
+    pub fn query_kmer<const USE_HINT: u8, S: AsRef<[u8]>>(
         &self,
         kmer: S,
         hint: Option<(usize, usize)>,
@@ -396,14 +437,27 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let kmer = kmer.as_ref();
         debug_assert!(kmer.len() == self.k);
 
-        if USE_HINT && let Some((pos_hint, rank_hint)) = hint {
-            // does this k-mer appear right after the previous one?
-            if self.useq.check_genome(kmer, pos_hint) {
-                let pos_end = pos_hint + self.k - 1;
-                let rank2 = self.bv.rank(pos_end).unwrap();
-                // is this k-mer in the same unitig as the previous one?
-                if rank2 == rank_hint {
+        if USE_HINT > 0
+            && let Some((pos_hint, rank_hint)) = hint
+        {
+            let pos_end = pos_hint + self.k - 1;
+            let rank2 = self.bv.rank(pos_end);
+            // is this k-mer in the same unitig as the previous one?
+            if rank2 == Some(rank_hint) {
+                // does this k-mer appear right after the previous one?
+                if self.useq.check_genome(kmer, pos_hint) {
                     return Some((pos_hint, rank_hint));
+                }
+            } else if USE_HINT > 1 {
+                // is this k-mer in the next unitig?
+                let pos_start = pos_hint + self.k - 1;
+                if self.useq.check_genome(kmer, pos_start) {
+                    let rank1 = self.bv.rank(pos_start).unwrap();
+                    let rank2 = self.bv.rank(pos_start + self.k - 1).unwrap();
+                    if rank1 == rank2 {
+                        // did not cross useq boundary
+                        return Some((pos_start, rank1));
+                    }
                 }
             }
         }
@@ -425,7 +479,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         None
     }
 
-    pub fn query<const USE_HINT: bool, S: AsRef<[u8]>>(&self, q: S) -> Vec<&str> {
+    pub fn query<const USE_HINT: u8, S: AsRef<[u8]>>(&self, q: S) -> Vec<&str> {
         let q = q.as_ref();
         let color_bytes = self.n_colors.div_ceil(8);
         let mut colors: Vec<u8> = vec![0xff; color_bytes];
@@ -437,7 +491,7 @@ impl<HM: MapLike> PufferfishIndex<HM> {
                 for i in 0..color_bytes {
                     colors[i] &= self.utab[utab_offset + i];
                 }
-                if USE_HINT {
+                if USE_HINT > 0 {
                     hint = Some((pos + self.k, rank));
                 }
             } else {
@@ -447,7 +501,9 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let remainder = chunks_iterator.remainder().len();
         if remainder > 0 {
             // check last k-mer
-            if USE_HINT && let Some((pos, rank)) = hint {
+            if USE_HINT > 0
+                && let Some((pos, rank)) = hint
+            {
                 hint = Some((pos + remainder - self.k, rank))
             }
             if let Some((_pos, rank)) = self.query_kmer::<USE_HINT, _>(&q[q.len() - self.k..], hint)
@@ -485,20 +541,20 @@ mod tests {
     #[test]
     fn basic_hashmap_test() {
         let sequences = vec![("a", "CTAAGAT"), ("b", "CGATGCA"), ("c", "TAAGAGG")];
-        let index = HashMapPufferfishIndex::new(3, sequences, Strategy::Better);
+        let index = HashMapPufferfishIndex::new(3, sequences, Strategy::Greedy);
 
-        assert!(index.query::<true, _>("CTAAGAT").contains(&"a"));
-        assert!(index.query::<true, _>("CGATGCA").contains(&"b"));
-        assert!(index.query::<true, _>("TAAGAGG").contains(&"c"));
+        assert!(index.query::<2, _>("CTAAGAT").contains(&"a"));
+        assert!(index.query::<2, _>("CGATGCA").contains(&"b"));
+        assert!(index.query::<2, _>("TAAGAGG").contains(&"c"));
     }
 
     #[test]
     fn basic_mphf_test() {
         let sequences = vec![("a", "CTAAGAT"), ("b", "CGATGCA"), ("c", "TAAGAGG")];
-        let index = DefaultPufferfishIndex::new(3, sequences, Strategy::Better);
+        let index = DefaultPufferfishIndex::new(3, sequences, Strategy::Greedy);
 
-        assert!(index.query::<true, _>("CTAAGAT").contains(&"a"));
-        assert!(index.query::<true, _>("CGATGCA").contains(&"b"));
-        assert!(index.query::<true, _>("TAAGAGG").contains(&"c"));
+        assert!(index.query::<2, _>("CTAAGAT").contains(&"a"));
+        assert!(index.query::<2, _>("CGATGCA").contains(&"b"));
+        assert!(index.query::<2, _>("TAAGAGG").contains(&"c"));
     }
 }
