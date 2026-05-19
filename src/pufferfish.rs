@@ -285,36 +285,35 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let start = Instant::now();
 
         let mut useq_len = 0;
-        let mut unipaths: Vec<Vec<u8>> = Vec::with_capacity(junctions.len());
+        let mut unipaths: HashMap<&[u8], (&[u8], HashMap<&[u8], u32>)> =
+            HashMap::with_capacity(junctions.len());
 
-        // Create a unipath at each junction
-        for (node, _colors) in junctions.iter() {
-            let mut unipath: Vec<u8> = node.clone();
-            let mut key: Vec<u8> = node.clone();
-            loop {
-                if branch_or_end.contains(&key[..]) {
-                    // no or multiple paths
-                    break;
-                }
-                key.push(0);
-                for c in [0, 1, 2, 3] {
-                    key[k] = c;
-                    if is_real_edge(&key) {
-                        // found forward edge
-                        break;
+        for string in reference_strings.iter() {
+            let mut cur_unitig: Option<usize> = None;
+            for (i, window) in string.windows(k).enumerate() {
+                if junctions.contains_key(&window[..]) {
+                    if let Some(start) = cur_unitig {
+                        // end current unipath
+                        *unipaths
+                            .entry(&string[start..start + k])
+                            .or_insert_with(|| (&string[start..i + k - 1], HashMap::new()))
+                            .1
+                            .entry(&window)
+                            .or_insert(0) += 1;
                     }
+                    // start new unipath
+                    cur_unitig = Some(i);
                 }
-                key.remove(0);
-
-                if junctions.contains_key(&key) {
-                    // reached a junction
-                    break;
-                }
-
-                unipath.push(key[k - 1]);
             }
-            useq_len += unipath.len();
-            unipaths.push(unipath);
+            if let Some(start) = cur_unitig {
+                unipaths
+                    .entry(&string[start..start + k])
+                    .or_insert_with(|| (&string[start..], HashMap::new()));
+            }
+        }
+
+        for (_k, v) in unipaths.iter() {
+            useq_len += v.0.len();
         }
 
         trace!(
@@ -341,9 +340,9 @@ impl<HM: MapLike> PufferfishIndex<HM> {
         let mut bv: Vec<u64> = vec![0; useq_len.div_ceil(64)];
         let mut utab: Vec<u8> = Vec::with_capacity(junctions.len() * color_bytes);
 
-        for unipath in unipaths {
+        for (first_kmer, (unipath, _data)) in unipaths {
             // update utab
-            utab.extend(&junctions[&unipath[..k]]);
+            utab.extend(&junctions[first_kmer]);
 
             // update pos
             let mut useq_idx = useq.len();
@@ -451,7 +450,8 @@ impl<HM: MapLike> PufferfishIndex<HM> {
             if USE_HINT && let Some((pos, rank)) = hint {
                 hint = Some((pos + remainder - self.k, rank))
             }
-            if let Some((_pos, rank)) = self.query_kmer::<USE_HINT, _>(&q[q.len() - self.k..], hint) {
+            if let Some((_pos, rank)) = self.query_kmer::<USE_HINT, _>(&q[q.len() - self.k..], hint)
+            {
                 let utab_offset = rank * color_bytes;
                 for i in 0..color_bytes {
                     colors[i] &= self.utab[utab_offset + i];
